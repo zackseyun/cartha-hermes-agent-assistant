@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cartha Hermes Local</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="rail">
+        <div class="brand">
+          <div class="brand-mark">⚕</div>
+          <div>
+            <div class="eyebrow">Cartha Local</div>
+            <h1>Hermes</h1>
+          </div>
+        </div>
+        <div class="status-card">
+          <div class="status-row">
+            <span id="status-dot" class="dot dot-warn"></span>
+            <span id="status-text">Checking Hermes…</span>
+          </div>
+          <div id="status-detail" class="muted">Qwen via Ollama</div>
+        </div>
+        <div class="quick-actions">
+          <button data-prompt="What is the current health of this Mac? Use safe read-only commands only.">System check</button>
+          <button data-prompt="Summarize the current GitHub workspace. Start with folders and likely active repos.">Workspace map</button>
+          <button data-prompt="What local Hermes tools and skills are available? Give me a short operator overview.">Harness tools</button>
+        </div>
+        <div class="settings-card">
+          <label>
+            System prompt
+            <textarea id="system-prompt" rows="8">You are Quinn, Zack's local Hermes-powered operator. Be concise, practical, and careful. Prefer read-only inspection before changing anything. Ask before destructive actions.</textarea>
+          </label>
+        </div>
+      </aside>
+
+      <main class="chat-panel">
+        <header class="topbar">
+          <div>
+            <div class="eyebrow">Powered by Hermes Agent + local Qwen</div>
+            <h2>Local Operator Console</h2>
+          </div>
+          <div class="top-actions">
+            <button id="refresh-status">Refresh</button>
+            <button id="clear-chat" class="ghost">Clear</button>
+          </div>
+        </header>
+
+        <section id="messages" class="messages" aria-live="polite"></section>
+
+        <form id="composer" class="composer">
+          <textarea id="prompt" rows="3" placeholder="Ask Hermes to inspect, reason, or act locally…"></textarea>
+          <div class="composer-footer">
+            <div id="stream-status" class="muted">Ready</div>
+            <button id="stop" type="button" class="ghost" disabled>Stop</button>
+            <button id="send" type="submit">Send</button>
+          </div>
+        </form>
+      </main>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
