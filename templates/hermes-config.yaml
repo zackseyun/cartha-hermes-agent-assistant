@@ -1,0 +1,22 @@
+# Baseline Hermes config fragment installed by hermes-local-agent-kit.
+# scripts/install.mjs patches these keys into ~/.hermes/config.yaml.
+model:
+  default: xiaomi/mimo-v2.5-pro
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  context_length: 1048576
+  max_tokens: 256
+fallback_providers:
+  - provider: openrouter
+    model: deepseek/deepseek-v4-flash
+    base_url: https://openrouter.ai/api/v1
+    key_env: OPENROUTER_API_KEY
+platform_toolsets:
+  api_server:
+    - terminal
+    - file
+    - todo
+terminal:
+  backend: local
+  cwd: ~/Documents/GitHub
+  timeout: 180

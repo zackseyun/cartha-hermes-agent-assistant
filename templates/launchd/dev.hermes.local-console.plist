@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.hermes.local-console</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE_BIN__</string>
+    <string>__REPO_DIR__/server.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>__REPO_DIR__</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__REPO_DIR__/logs/local-console.log</string>
+  <key>StandardErrorPath</key><string>__REPO_DIR__/logs/local-console.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HERMES_UI_HOST</key><string>127.0.0.1</string>
+    <key>HERMES_UI_PORT</key><string>5128</string>
+    <key>HERMES_API_BASE</key><string>http://127.0.0.1:8642/v1</string>
+    <key>HERMES_MODEL</key><string>hermes-agent</string>
+  </dict>
+</dict>
+</plist>

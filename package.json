@@ -1,0 +1,30 @@
+{
+  "name": "hermes-local-agent-kit",
+  "version": "0.1.0",
+  "description": "A public, batteries-included local Hermes Agent stack: gateway, dashboard, workspace UI, launchd services, and a small operator console.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "hermes-local-agent-kit": "./scripts/install.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "HERMES_UI_PORT=5128 node --watch server.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check scripts/*.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "install:stack": "node scripts/install.mjs",
+    "reset:openrouter": "node scripts/reset-openrouter-pool.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "server.mjs",
+    "public",
+    "scripts",
+    "templates",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ]
+}
