@@ -21,17 +21,23 @@
             <span id="status-dot" class="dot dot-warn"></span>
             <span id="status-text">Checking Hermes…</span>
           </div>
-          <div id="status-detail" class="muted">Gemma 4 31B via Ollama</div>
+          <div id="status-detail" class="muted">Agent: DeepSeek V4 Flash · Vision: Gemma 4 31B</div>
         </div>
         <div class="quick-actions">
-          <button data-prompt="What is the current health of this Mac? Use safe read-only commands only.">System check</button>
-          <button data-prompt="Summarize the current GitHub workspace. Start with folders and likely active repos.">Workspace map</button>
-          <button data-prompt="Describe this local Gemma 4 31B + Hermes setup and what it can safely do.">Harness overview</button>
+          <button data-prompt="Use tools to inspect this Mac: show cwd, uptime/load, memory pressure, and top 5 CPU processes. Keep it concise.">System check</button>
+          <button data-prompt="Use file/terminal tools to summarize the current GitHub workspace. List repos and identify likely active projects.">Workspace map</button>
+          <button data-prompt="Use tools if helpful. Explain what this local Hermes harness can do from here, including its current working directory and available tool categories.">Harness overview</button>
+        </div>
+        <div class="companion-card">
+          <div class="eyebrow">Companion UIs</div>
+          <a href="http://127.0.0.1:9119" target="_blank" rel="noreferrer">Hermes native dashboard ↗</a>
+          <a href="https://docs.openwebui.com/getting-started/quick-start/connect-an-agent/hermes-agent/" target="_blank" rel="noreferrer">Open WebUI setup guide ↗</a>
+          <p class="muted">Use this console for Cartha shortcuts; use Hermes/Open WebUI for full agent sessions.</p>
         </div>
         <div class="settings-card">
           <label>
             System prompt
-            <textarea id="system-prompt" rows="8">You are Quinn, Zack's local operator powered by Gemma 4 31B. Be concise, practical, and careful. Prefer read-only inspection before changing anything. Ask before destructive actions.</textarea>
+            <textarea id="system-prompt" rows="8">You are Quinn, Zack's local Hermes operator. Use tools to inspect real local state before answering operational questions. Start read-only, be concise, and ask before destructive changes. When you use tools, summarize what you verified and what changed.</textarea>
           </label>
         </div>
       </aside>
@@ -39,7 +45,7 @@
       <main class="chat-panel">
         <header class="topbar">
           <div>
-            <div class="eyebrow">Powered by local Gemma 4 31B + Hermes harness</div>
+            <div class="eyebrow">Powered by DeepSeek V4 Flash agent + local Gemma vision</div>
             <h2>Local Operator Console</h2>
           </div>
           <div class="top-actions">
@@ -51,7 +57,7 @@
         <section id="messages" class="messages" aria-live="polite"></section>
 
         <form id="composer" class="composer">
-          <textarea id="prompt" rows="3" placeholder="Ask Gemma 4 31B to inspect, reason, or describe an attached image…"></textarea>
+          <textarea id="prompt" rows="3" placeholder="Ask the Hermes agent to inspect files, run safe commands, or use tools…"></textarea>
           <div class="attachment-row">
             <label class="file-picker">
               <span>Attach image</span>
@@ -60,9 +66,9 @@
             <div id="attachment-preview" class="attachment-preview muted">Vision is enabled. Audio needs E4B or transcription.</div>
           </div>
           <div class="backend-row">
-            <label class="inline-toggle"><input id="backend-ollama" type="radio" name="backend" value="ollama" checked /> Fast Gemma chat</label>
-            <label class="inline-toggle"><input id="backend-openrouter" type="radio" name="backend" value="openrouter" /> DeepSeek V4 Flash</label>
-            <label class="inline-toggle"><input id="backend-hermes" type="radio" name="backend" value="hermes" /> Hermes agent mode</label>
+            <label class="inline-toggle"><input id="backend-ollama" type="radio" name="backend" value="ollama" /> Gemma vision chat</label>
+            <label class="inline-toggle"><input id="backend-openrouter" type="radio" name="backend" value="openrouter" /> DeepSeek chat</label>
+            <label class="inline-toggle"><input id="backend-hermes" type="radio" name="backend" value="hermes" checked /> Hermes agent mode</label>
           </div>
           <div class="composer-footer">
             <div id="stream-status" class="muted">Ready</div>

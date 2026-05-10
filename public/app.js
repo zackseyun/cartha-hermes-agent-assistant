@@ -17,7 +17,7 @@ let conversation = [];
 let activeController = null;
 
 function selectedBackend() {
-  return document.querySelector('input[name="backend"]:checked')?.value || "ollama";
+  return document.querySelector('input[name="backend"]:checked')?.value || "hermes";
 }
 
 function setStatus(kind, text, detail = "") {
@@ -48,19 +48,27 @@ function setBusy(busy) {
   stopButton.disabled = !busy;
   promptEl.disabled = busy;
   attachmentsEl.disabled = busy;
-  streamStatus.textContent = busy ? "Gemma is thinking…" : "Ready";
+  if (!busy) {
+    streamStatus.textContent = "Ready";
+  } else if (selectedBackend() === "hermes") {
+    streamStatus.textContent = "Hermes agent is using tools…";
+  } else if (selectedBackend() === "openrouter") {
+    streamStatus.textContent = "DeepSeek is responding…";
+  } else {
+    streamStatus.textContent = "Gemma is responding…";
+  }
 }
 
 async function refreshStatus() {
-  setStatus("warn", "Checking local model…", "Calling Ollama + Hermes gateway");
+  setStatus("warn", "Checking local harness…", "Calling Hermes gateway + local vision runtime");
   try {
     const res = await fetch("/api/status");
     const data = await res.json();
     if (!data.ok) throw new Error(data.detail || data.error || "status failed");
     setStatus(
       "ok",
-      "Gemma 4 31B online",
-      `${data.model} · ${data.latencyMs}ms · Hermes ${data.hermesGateway}`,
+      "Local harness online",
+      `Agent ${data.deepSeekModel} · Vision ${data.model} · ${data.latencyMs}ms`,
     );
   } catch (err) {
     setStatus("danger", "Local model offline", err.message || String(err));
@@ -152,12 +160,25 @@ async function sendPrompt(text) {
   const hasAttachments = Boolean(attachmentsEl.files?.length);
   if (!trimmed && !hasAttachments) return;
 
-  const userContent = await buildUserContent(trimmed);
+  let userContent;
+  try {
+    userContent = await buildUserContent(trimmed);
+  } catch (err) {
+    addMessage("assistant", `Could not read attachment: ${err.message || err}`);
+    return;
+  }
   const attached = attachmentLabel();
   const displayText = attached ? `${trimmed || "Describe this image."}\n\nAttached: ${attached}` : trimmed;
   addMessage("user", displayText);
   const assistantNode = addMessage("assistant", "");
   const messages = buildMessages(userContent);
+
+  // Clear immediately after a valid submit. Long agent runs should not leave
+  // stale text sitting in the composer.
+  promptEl.value = "";
+  attachmentsEl.value = "";
+  updateAttachmentPreview();
+
   activeController = new AbortController();
   setBusy(true);
 
@@ -207,9 +228,6 @@ async function sendPrompt(text) {
   } finally {
     activeController = null;
     setBusy(false);
-    promptEl.value = "";
-    attachmentsEl.value = "";
-    updateAttachmentPreview();
     promptEl.focus();
   }
 }
@@ -231,7 +249,7 @@ stopButton.addEventListener("click", () => activeController?.abort());
 clearButton.addEventListener("click", () => {
   conversation = [];
   messagesEl.innerHTML = "";
-  addMessage("system", "New local Gemma 4 31B session. Use Cmd+Enter to send.");
+  addMessage("system", "New Hermes agent session. Cmd+Enter sends immediately; agent mode can use local tools.");
 });
 refreshButton.addEventListener("click", () => void refreshStatus());
 
@@ -242,5 +260,5 @@ document.querySelectorAll("[data-prompt]").forEach((button) => {
   });
 });
 
-addMessage("system", "New local Gemma 4 31B session. Use Cmd+Enter to send. The browser never sees your Hermes API key.");
+addMessage("system", "New Hermes agent session. Cmd+Enter sends immediately. Agent mode uses DeepSeek V4 Flash through Hermes tools; Gemma mode is for local vision/chat.");
 void refreshStatus();

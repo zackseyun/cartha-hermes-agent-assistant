@@ -62,7 +62,7 @@ h1 { font-size: 27px; }
 h2 { font-size: 25px; margin-top: 6px; }
 .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; }
 .muted { color: var(--muted); font-size: 13px; }
-.status-card, .settings-card { padding: 16px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); border-radius: 20px; }
+.status-card, .settings-card, .companion-card { padding: 16px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); border-radius: 20px; }
 .status-row { display: flex; align-items: center; gap: 10px; font-weight: 700; }
 .dot { width: 10px; height: 10px; border-radius: 99px; box-shadow: 0 0 16px currentColor; }
 .dot-ok { color: var(--ok); background: var(--ok); }
@@ -70,6 +70,10 @@ h2 { font-size: 25px; margin-top: 6px; }
 .dot-danger { color: var(--danger); background: var(--danger); }
 .quick-actions { display: grid; gap: 10px; }
 .quick-actions button { text-align: left; }
+.companion-card { display: grid; gap: 9px; }
+.companion-card a { color: #c4b5fd; font-weight: 700; text-decoration: none; }
+.companion-card a:hover { color: #a5f3fc; }
+.companion-card p { margin: 4px 0 0; }
 label { display: grid; gap: 8px; color: var(--muted); font-size: 13px; }
 textarea {
   width: 100%;

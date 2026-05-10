@@ -1,21 +1,32 @@
 # Cartha Hermes Local
 
-A from-scratch local UI for Zack's Gemma/Hermes experiments.
+A from-scratch local operator console for Zack's Hermes + Gemma experiments.
+
+This is intentionally a thin console, not a full Open WebUI clone. The default
+path is "ask Hermes to do real work with tools"; the Gemma path is kept for
+local vision/model testing.
 
 ## Runtime
 
 - UI: <http://127.0.0.1:5128>
-- Fast default backend: local Ollama OpenAI-compatible API at <http://127.0.0.1:11434/v1>
-- Agent harness backend: Hermes API server at <http://127.0.0.1:8642/v1>
+- Default agent backend: Hermes API server at <http://127.0.0.1:8642/v1>
+- Local vision/model backend: Ollama OpenAI-compatible API at <http://127.0.0.1:11434/v1>
 - Cloud work-agent comparison backend: OpenRouter `deepseek/deepseek-v4-flash`
-- Main model: `gemma4:31b-hermes` via Ollama, kept warm with a 65K context for Hermes compatibility.
-- Browser security: the Hermes API key is read server-side from `~/.hermes/.env` (`API_SERVER_KEY`) and is never exposed to browser JS.
+- Agent model: Hermes is configured to use OpenRouter `deepseek/deepseek-v4-flash`.
+- Vision model: `gemma4:31b-hermes` via Ollama.
+- Browser security: Hermes/OpenRouter keys are read server-side from `~/.hermes/.env`
+  and are never exposed to browser JS.
+- Native Hermes dashboard: <http://127.0.0.1:9119>
+- Mature chat UI option: Open WebUI can connect to Hermes at `http://127.0.0.1:8642/v1`.
 
 ## Modes
 
-- **Fast Gemma chat**: direct local Gemma 4 31B chat/vision path. This is the default and is best for interactive testing.
-- **DeepSeek V4 Flash**: OpenRouter-hosted text/tool-work comparison path. Requires a valid `OPENROUTER_API_KEY`.
-- **Hermes agent mode**: routes through Hermes Agent's API server for the full harness/tool loop. On Gemma 4 31B dense this can be much slower than the direct path.
+- **Hermes agent mode**: default. Routes through Hermes Agent's API server for
+  terminal/file/browser/memory/skills/tool use.
+- **Gemma vision chat**: direct local Gemma 4 31B chat/vision path. Best for
+  image understanding and local model testing, not agentic work.
+- **DeepSeek chat**: direct OpenRouter-hosted text comparison path. Useful for
+  isolating whether a failure is Hermes/tooling vs model quality.
 
 ## Multimodal
 

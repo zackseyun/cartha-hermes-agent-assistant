@@ -13,7 +13,7 @@ const OPENROUTER_API_BASE = (process.env.OPENROUTER_API_BASE || "https://openrou
 const HERMES_MODEL = process.env.HERMES_MODEL || "hermes-agent";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gemma4:31b-hermes";
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "deepseek/deepseek-v4-flash";
-const DEFAULT_BACKEND = process.env.HERMES_UI_BACKEND || "ollama";
+const DEFAULT_BACKEND = process.env.HERMES_UI_BACKEND || "hermes";
 const MAX_BODY_BYTES = Number.parseInt(process.env.HERMES_UI_MAX_BODY_BYTES || "32000000", 10);
 
 const CONTENT_TYPES = new Map([
@@ -196,43 +196,75 @@ async function handleStatus(_req, res) {
     hermesGateway = "offline";
   }
 
-  try {
-    const response = await fetch(`${OLLAMA_API_BASE}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        messages: [{ role: "user", content: "Say only: ok" }],
-        stream: false,
-        max_tokens: 16,
-        temperature: 0,
-        reasoning_effort: "none",
-      }),
-      signal: AbortSignal.timeout(45_000),
-    });
-    const text = await response.text();
-    sendJson(res, response.ok ? 200 : 502, {
-      ok: response.ok,
-      backend: DEFAULT_BACKEND,
-      ollamaApiBase: OLLAMA_API_BASE,
-      hermesApiBase: HERMES_API_BASE,
-      openRouterApiBase: OPENROUTER_API_BASE,
-      hermesGateway,
-      model: OLLAMA_MODEL,
-      deepSeekModel: OPENROUTER_MODEL,
-      hermesModel: HERMES_MODEL,
-      latencyMs: Date.now() - startedAt,
-      status: response.status,
-      sample: response.ok ? safeAssistantText(text) : text.slice(0, 500),
-    });
-  } catch (err) {
-    sendError(res, 502, "Local Gemma/Ollama unavailable", String(err?.message || err));
+  const openRouterKey = await getOpenRouterKey();
+  let agentStatus = "missing-key";
+  let agentSample = "";
+  let agentHttpStatus = 0;
+  if (openRouterKey) {
+    try {
+      const response = await fetch(`${OPENROUTER_API_BASE}/chat/completions`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openRouterKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "http://127.0.0.1:5128",
+          "X-Title": "Cartha Hermes Local",
+        },
+        body: JSON.stringify({
+          model: OPENROUTER_MODEL,
+          messages: [{ role: "user", content: "Reply exactly: ok" }],
+          stream: false,
+          max_tokens: 8,
+          temperature: 0,
+          reasoning: { enabled: false },
+        }),
+        signal: AbortSignal.timeout(8_000),
+      });
+      agentHttpStatus = response.status;
+      const text = await response.text();
+      agentSample = response.ok ? safeAssistantText(text) : text.slice(0, 500);
+      agentStatus = response.ok ? "online" : `http ${response.status}`;
+    } catch (err) {
+      agentStatus = `error: ${String(err?.message || err)}`;
+    }
   }
+
+  // Gemma is optional for the operator console. Do not let a local 31B runner
+  // block the status badge; it can cold-load on demand for vision/chat.
+  let gemmaStatus = "not checked";
+  try {
+    const response = await fetch(`${OLLAMA_API_BASE}/models`, { signal: AbortSignal.timeout(1_500) });
+    gemmaStatus = response.ok ? "ollama online" : `ollama http ${response.status}`;
+  } catch {
+    gemmaStatus = "ollama offline";
+  }
+
+  sendJson(res, agentStatus === "online" ? 200 : 502, {
+    ok: agentStatus === "online",
+    backend: DEFAULT_BACKEND,
+    ollamaApiBase: OLLAMA_API_BASE,
+    hermesApiBase: HERMES_API_BASE,
+    openRouterApiBase: OPENROUTER_API_BASE,
+    hermesGateway,
+    agentStatus,
+    gemmaStatus,
+    model: OLLAMA_MODEL,
+    deepSeekModel: OPENROUTER_MODEL,
+    hermesModel: HERMES_MODEL,
+    latencyMs: Date.now() - startedAt,
+    status: agentHttpStatus || (agentStatus === "online" ? 200 : 502),
+    sample: agentSample,
+  });
 }
 
 async function proxyStreamingRequest(req, res, upstreamUrl, headers, body) {
   const controller = new AbortController();
-  req.on("close", () => controller.abort());
+  // Abort only if the browser actually disconnects mid-stream. `req.close`
+  // can fire after the request body is consumed, which made long agent runs
+  // look like generic browser "network error" failures.
+  res.on("close", () => {
+    if (!res.writableEnded) controller.abort();
+  });
 
   let upstream;
   try {
@@ -283,7 +315,7 @@ async function proxyChat(req, res) {
   const messages = normalizeMessages(body.messages);
   if (messages.length === 0) return sendError(res, 400, "At least one message is required");
 
-  const backend = body.backend === "hermes" ? "hermes" : "ollama";
+  const backend = body.backend === "ollama" ? "ollama" : DEFAULT_BACKEND;
   const requestedBackend = body.backend === "openrouter" ? "openrouter" : backend;
   if (requestedBackend === "openrouter") {
     if (messagesContainAttachments(messages)) {
