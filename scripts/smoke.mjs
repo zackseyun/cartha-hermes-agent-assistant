@@ -38,6 +38,12 @@ async function main() {
     throw new Error(`deepseek smoke failed: ${deepseek.text}`);
   }
 
+  const creditRemaining = Number(status.creditRemainingUsd);
+  if (Number.isFinite(creditRemaining) && creditRemaining <= 0) {
+    console.warn(`agent tool smoke skipped: OpenRouter credits exhausted (${creditRemaining.toFixed(2)} USD remaining)`);
+    return;
+  }
+
   const agent = await streamText("hermes", "Use a terminal or file tool to print only the current working directory.");
   if (!agent.text.includes("/Users/zackseyun/My Drive/Moltbot-Shared/Documents/GitHub")) {
     throw new Error(`agent smoke failed: ${agent.text}`);

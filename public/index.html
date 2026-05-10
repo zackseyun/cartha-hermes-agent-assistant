@@ -21,7 +21,7 @@
             <span id="status-dot" class="dot dot-warn"></span>
             <span id="status-text">Checking Hermes…</span>
           </div>
-          <div id="status-detail" class="muted">Agent: DeepSeek V4 Flash · Vision: Gemma 4 31B</div>
+          <div id="status-detail" class="muted">Agent: MiMo V2.5 Pro · Small: DeepSeek V4 Flash · Vision: Gemma 4 31B</div>
         </div>
         <div class="quick-actions">
           <button data-prompt="Use tools to inspect this Mac: show cwd, uptime/load, memory pressure, and top 5 CPU processes. Keep it concise.">System check</button>
@@ -45,7 +45,7 @@
       <main class="chat-panel">
         <header class="topbar">
           <div>
-            <div class="eyebrow">Powered by DeepSeek V4 Flash agent + local Gemma vision</div>
+            <div class="eyebrow">Powered by MiMo V2.5 Pro agent + DeepSeek small tasks + local Gemma vision</div>
             <h2>Local Operator Console</h2>
           </div>
           <div class="top-actions">
@@ -67,7 +67,7 @@
           </div>
           <div class="backend-row">
             <label class="inline-toggle"><input id="backend-ollama" type="radio" name="backend" value="ollama" /> Gemma vision chat</label>
-            <label class="inline-toggle"><input id="backend-openrouter" type="radio" name="backend" value="openrouter" /> DeepSeek chat</label>
+            <label class="inline-toggle"><input id="backend-openrouter" type="radio" name="backend" value="openrouter" /> DeepSeek small chat</label>
             <label class="inline-toggle"><input id="backend-hermes" type="radio" name="backend" value="hermes" checked /> Hermes agent mode</label>
           </div>
           <div class="composer-footer">

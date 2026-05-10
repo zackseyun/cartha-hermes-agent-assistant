@@ -12,7 +12,8 @@ const OLLAMA_API_BASE = (process.env.OLLAMA_API_BASE || "http://127.0.0.1:11434/
 const OPENROUTER_API_BASE = (process.env.OPENROUTER_API_BASE || "https://openrouter.ai/api/v1").replace(/\/+$/u, "");
 const HERMES_MODEL = process.env.HERMES_MODEL || "hermes-agent";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gemma4:31b-hermes";
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "deepseek/deepseek-v4-flash";
+const OPENROUTER_AGENT_MODEL = process.env.OPENROUTER_AGENT_MODEL || "xiaomi/mimo-v2.5-pro";
+const OPENROUTER_SMALL_MODEL = process.env.OPENROUTER_SMALL_MODEL || "deepseek/deepseek-v4-flash";
 const DEFAULT_BACKEND = process.env.HERMES_UI_BACKEND || "hermes";
 const MAX_BODY_BYTES = Number.parseInt(process.env.HERMES_UI_MAX_BODY_BYTES || "32000000", 10);
 
@@ -71,6 +72,24 @@ async function getOpenRouterKey() {
     cachedOpenRouterKey = "";
   }
   return cachedOpenRouterKey;
+}
+
+async function getOpenRouterCreditRemaining(key) {
+  if (!key) return null;
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/credits", {
+      headers: { Authorization: `Bearer ${key}` },
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const total = Number(payload?.data?.total_credits);
+    const usage = Number(payload?.data?.total_usage);
+    if (!Number.isFinite(total) || !Number.isFinite(usage)) return null;
+    return total - usage;
+  } catch {
+    return null;
+  }
 }
 
 function sendJson(res, status, body) {
@@ -197,32 +216,20 @@ async function handleStatus(_req, res) {
   }
 
   const openRouterKey = await getOpenRouterKey();
+  const creditRemainingUsd = await getOpenRouterCreditRemaining(openRouterKey);
   let agentStatus = "missing-key";
   let agentSample = "";
   let agentHttpStatus = 0;
   if (openRouterKey) {
     try {
-      const response = await fetch(`${OPENROUTER_API_BASE}/chat/completions`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${openRouterKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "http://127.0.0.1:5128",
-          "X-Title": "Cartha Hermes Local",
-        },
-        body: JSON.stringify({
-          model: OPENROUTER_MODEL,
-          messages: [{ role: "user", content: "Reply exactly: ok" }],
-          stream: false,
-          max_tokens: 8,
-          temperature: 0,
-          reasoning: { enabled: false },
-        }),
-        signal: AbortSignal.timeout(8_000),
+      // Do not burn model tokens on every status refresh. `/key` validates the
+      // credential; real model/tool health is covered by `npm run smoke`.
+      const response = await fetch(`${OPENROUTER_API_BASE}/key`, {
+        headers: { Authorization: `Bearer ${openRouterKey}` },
+        signal: AbortSignal.timeout(3_000),
       });
       agentHttpStatus = response.status;
-      const text = await response.text();
-      agentSample = response.ok ? safeAssistantText(text) : text.slice(0, 500);
+      agentSample = response.ok ? "key ok" : (await response.text()).slice(0, 500);
       agentStatus = response.ok ? "online" : `http ${response.status}`;
     } catch (err) {
       agentStatus = `error: ${String(err?.message || err)}`;
@@ -249,7 +256,9 @@ async function handleStatus(_req, res) {
     agentStatus,
     gemmaStatus,
     model: OLLAMA_MODEL,
-    deepSeekModel: OPENROUTER_MODEL,
+    agentModel: OPENROUTER_AGENT_MODEL,
+    smallModel: OPENROUTER_SMALL_MODEL,
+    creditRemainingUsd,
     hermesModel: HERMES_MODEL,
     latencyMs: Date.now() - startedAt,
     status: agentHttpStatus || (agentStatus === "online" ? 200 : 502),
@@ -335,11 +344,11 @@ async function proxyChat(req, res) {
         "X-Title": "Cartha Hermes Local",
       },
       {
-        model: OPENROUTER_MODEL,
+        model: OPENROUTER_SMALL_MODEL,
         messages,
         stream: true,
         temperature: 0.2,
-        max_tokens: 4096,
+        max_tokens: 2048,
         reasoning: { enabled: false },
       },
     );

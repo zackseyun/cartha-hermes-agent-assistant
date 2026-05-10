@@ -59,16 +59,31 @@ function setBusy(busy) {
   }
 }
 
+function creditText(value) {
+  if (!Number.isFinite(value)) return "";
+  const sign = value < 0 ? "-" : "";
+  return ` · OpenRouter credit ${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
 async function refreshStatus() {
   setStatus("warn", "Checking local harness…", "Calling Hermes gateway + local vision runtime");
   try {
     const res = await fetch("/api/status");
     const data = await res.json();
     if (!data.ok) throw new Error(data.detail || data.error || "status failed");
+    const credit = Number(data.creditRemainingUsd);
+    if (Number.isFinite(credit) && credit <= 0) {
+      setStatus(
+        "warn",
+        "MiMo configured, credits exhausted",
+        `Agent ${data.agentModel} · Small ${data.smallModel} · Vision ${data.model}${creditText(credit)}`,
+      );
+      return;
+    }
     setStatus(
       "ok",
       "Local harness online",
-      `Agent ${data.deepSeekModel} · Vision ${data.model} · ${data.latencyMs}ms`,
+      `Agent ${data.agentModel} · Small ${data.smallModel} · Vision ${data.model} · ${data.latencyMs}ms${creditText(credit)}`,
     );
   } catch (err) {
     setStatus("danger", "Local model offline", err.message || String(err));
@@ -216,7 +231,12 @@ async function sendPrompt(text) {
         }
       });
     }
-    if (!assistantText.trim()) assistantNode.textContent = "(No text returned.)";
+    if (!assistantText.trim()) {
+      assistantNode.textContent =
+        selectedBackend() === "hermes"
+          ? "(No text returned. If MiMo is selected, check OpenRouter credits; Hermes tool prompts are larger than plain chat.)"
+          : "(No text returned.)";
+    }
     const userMemory = attached ? `${trimmed || "Image question."} [attached image(s): ${attached}]` : trimmed;
     conversation.push({ role: "user", content: userMemory }, { role: "assistant", content: assistantText });
   } catch (err) {
@@ -260,5 +280,5 @@ document.querySelectorAll("[data-prompt]").forEach((button) => {
   });
 });
 
-addMessage("system", "New Hermes agent session. Cmd+Enter sends immediately. Agent mode uses DeepSeek V4 Flash through Hermes tools; Gemma mode is for local vision/chat.");
+addMessage("system", "New Hermes agent session. Cmd+Enter sends immediately. Agent mode uses MiMo V2.5 Pro through Hermes tools; DeepSeek mode is for smaller text tasks; Gemma mode is for local vision/chat.");
 void refreshStatus();
