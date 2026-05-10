@@ -8,8 +8,13 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = Number.parseInt(process.env.HERMES_UI_PORT || "5128", 10);
 const HOST = process.env.HERMES_UI_HOST || "127.0.0.1";
 const HERMES_API_BASE = (process.env.HERMES_API_BASE || "http://127.0.0.1:8642/v1").replace(/\/+$/u, "");
-const DEFAULT_MODEL = process.env.HERMES_MODEL || "hermes-agent";
-const MAX_BODY_BYTES = 1_000_000;
+const OLLAMA_API_BASE = (process.env.OLLAMA_API_BASE || "http://127.0.0.1:11434/v1").replace(/\/+$/u, "");
+const OPENROUTER_API_BASE = (process.env.OPENROUTER_API_BASE || "https://openrouter.ai/api/v1").replace(/\/+$/u, "");
+const HERMES_MODEL = process.env.HERMES_MODEL || "hermes-agent";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gemma4:31b-hermes";
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "deepseek/deepseek-v4-flash";
+const DEFAULT_BACKEND = process.env.HERMES_UI_BACKEND || "ollama";
+const MAX_BODY_BYTES = Number.parseInt(process.env.HERMES_UI_MAX_BODY_BYTES || "32000000", 10);
 
 const CONTENT_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -44,6 +49,28 @@ async function getApiKey() {
   const raw = await fs.readFile(envPath, "utf8").catch(() => "");
   cachedApiKey = readDotenvValue(raw, "API_SERVER_KEY");
   return cachedApiKey;
+}
+
+let cachedOpenRouterKey = null;
+async function getOpenRouterKey() {
+  if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY;
+  if (cachedOpenRouterKey) return cachedOpenRouterKey;
+
+  const envPath = path.join(process.env.HOME || "", ".hermes", ".env");
+  const rawEnv = await fs.readFile(envPath, "utf8").catch(() => "");
+  cachedOpenRouterKey = readDotenvValue(rawEnv, "OPENROUTER_API_KEY");
+  if (cachedOpenRouterKey) return cachedOpenRouterKey;
+
+  const authPath = path.join(process.env.HOME || "", ".hermes", "auth.json");
+  try {
+    const auth = JSON.parse(await fs.readFile(authPath, "utf8"));
+    const pool = auth?.credential_pool?.openrouter;
+    const token = Array.isArray(pool) ? pool.find((entry) => entry?.access_token)?.access_token : "";
+    cachedOpenRouterKey = typeof token === "string" ? token : "";
+  } catch {
+    cachedOpenRouterKey = "";
+  }
+  return cachedOpenRouterKey;
 }
 
 function sendJson(res, status, body) {
@@ -106,82 +133,122 @@ function safeAssistantText(raw) {
   }
 }
 
+function normalizeContentPart(part) {
+  if (!part || typeof part !== "object") return null;
+  if (part.type === "text" && typeof part.text === "string") {
+    const text = part.text.trim();
+    return text ? { type: "text", text } : null;
+  }
+  if (part.type === "image_url" && typeof part.image_url?.url === "string") {
+    const url = part.image_url.url;
+    if (!url.startsWith("data:image/")) return null;
+    return { type: "image_url", image_url: { url } };
+  }
+  if (part.type === "input_audio" && typeof part.input_audio?.data === "string") {
+    const format = String(part.input_audio.format || "wav").replace(/[^a-z0-9]/giu, "").slice(0, 12) || "wav";
+    return { type: "input_audio", input_audio: { data: part.input_audio.data, format } };
+  }
+  return null;
+}
+
+function normalizeMessageContent(content) {
+  if (typeof content === "string") return content.trim() || null;
+  if (Array.isArray(content)) {
+    const parts = content.map(normalizeContentPart).filter(Boolean);
+    return parts.length ? parts : null;
+  }
+  return null;
+}
+
+function normalizeMessages(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((message) => {
+      const content = normalizeMessageContent(message?.content);
+      if (!content) return null;
+      return {
+        role: typeof message?.role === "string" && ["system", "user", "assistant"].includes(message.role) ? message.role : "user",
+        content,
+      };
+    })
+    .filter(Boolean);
+}
+
+function messagesContainAudio(messages) {
+  return messages.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "input_audio"));
+}
+
+function messagesContainAttachments(messages) {
+  return messages.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type !== "text"));
+}
+
 async function handleStatus(_req, res) {
-  const key = await getApiKey();
   const startedAt = Date.now();
+  let hermesGateway = "unknown";
   try {
-    const response = await fetch(`${HERMES_API_BASE}/chat/completions`, {
+    const key = await getApiKey();
+    const response = await fetch(`${HERMES_API_BASE.replace(/\/v1$/u, "")}/v1/capabilities`, {
+      headers: key ? { Authorization: `Bearer ${key}` } : {},
+      signal: AbortSignal.timeout(2_000),
+    });
+    hermesGateway = response.ok ? "online" : `http ${response.status}`;
+  } catch {
+    hermesGateway = "offline";
+  }
+
+  try {
+    const response = await fetch(`${OLLAMA_API_BASE}/chat/completions`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: DEFAULT_MODEL,
-        messages: [{ role: "user", content: "Reply exactly: ok" }],
+        model: OLLAMA_MODEL,
+        messages: [{ role: "user", content: "Say only: ok" }],
         stream: false,
-        max_tokens: 4,
+        max_tokens: 16,
+        temperature: 0,
+        reasoning_effort: "none",
       }),
       signal: AbortSignal.timeout(45_000),
     });
     const text = await response.text();
     sendJson(res, response.ok ? 200 : 502, {
       ok: response.ok,
+      backend: DEFAULT_BACKEND,
+      ollamaApiBase: OLLAMA_API_BASE,
       hermesApiBase: HERMES_API_BASE,
-      model: DEFAULT_MODEL,
+      openRouterApiBase: OPENROUTER_API_BASE,
+      hermesGateway,
+      model: OLLAMA_MODEL,
+      deepSeekModel: OPENROUTER_MODEL,
+      hermesModel: HERMES_MODEL,
       latencyMs: Date.now() - startedAt,
       status: response.status,
       sample: response.ok ? safeAssistantText(text) : text.slice(0, 500),
     });
   } catch (err) {
-    sendError(res, 502, "Hermes API unavailable", String(err?.message || err));
+    sendError(res, 502, "Local Gemma/Ollama unavailable", String(err?.message || err));
   }
 }
 
-function normalizeMessages(value) {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((message) => ({
-      role: typeof message?.role === "string" ? message.role : "user",
-      content: typeof message?.content === "string" ? message.content : "",
-    }))
-    .filter((message) => message.content.trim());
-}
-
-async function proxyChat(req, res) {
-  const key = await getApiKey();
-  if (!key) return sendError(res, 500, "Missing API_SERVER_KEY in ~/.hermes/.env");
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendError(res, err.status || 400, err.message || "Invalid JSON body");
-  }
-  const messages = normalizeMessages(body.messages);
-  if (messages.length === 0) return sendError(res, 400, "At least one message is required");
-
+async function proxyStreamingRequest(req, res, upstreamUrl, headers, body) {
   const controller = new AbortController();
   req.on("close", () => controller.abort());
 
   let upstream;
   try {
-    upstream = await fetch(`${HERMES_API_BASE}/chat/completions`, {
+    upstream = await fetch(upstreamUrl, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-      },
-      body: JSON.stringify({ model: DEFAULT_MODEL, messages, stream: true }),
+      headers,
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
   } catch (err) {
-    return sendError(res, 502, "Could not reach Hermes API", String(err?.message || err));
+    return sendError(res, 502, "Could not reach model backend", String(err?.message || err));
   }
 
   if (!upstream.ok || !upstream.body) {
     const text = await upstream.text().catch(() => "");
-    return sendError(res, 502, "Hermes API error", text.slice(0, 1000) || upstream.statusText);
+    return sendError(res, 502, "Model backend error", text.slice(0, 1500) || upstream.statusText);
   }
 
   res.writeHead(200, {
@@ -205,6 +272,88 @@ async function proxyChat(req, res) {
   }
 }
 
+async function proxyChat(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendError(res, err.status || 400, err.message || "Invalid JSON body");
+  }
+
+  const messages = normalizeMessages(body.messages);
+  if (messages.length === 0) return sendError(res, 400, "At least one message is required");
+
+  const backend = body.backend === "hermes" ? "hermes" : "ollama";
+  const requestedBackend = body.backend === "openrouter" ? "openrouter" : backend;
+  if (requestedBackend === "openrouter") {
+    if (messagesContainAttachments(messages)) {
+      return sendError(res, 400, "DeepSeek V4 Flash is text-only in this route", "Use Gemma 4 31B for image attachments, or send text-only prompts to DeepSeek V4 Flash.");
+    }
+    const key = await getOpenRouterKey();
+    if (!key) return sendError(res, 500, "Missing OpenRouter API key", "Set OPENROUTER_API_KEY in ~/.hermes/.env or run `hermes auth add openrouter`.");
+    return proxyStreamingRequest(
+      req,
+      res,
+      `${OPENROUTER_API_BASE}/chat/completions`,
+      {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        "HTTP-Referer": "http://127.0.0.1:5128",
+        "X-Title": "Cartha Hermes Local",
+      },
+      {
+        model: OPENROUTER_MODEL,
+        messages,
+        stream: true,
+        temperature: 0.2,
+        max_tokens: 4096,
+        reasoning: { enabled: false },
+      },
+    );
+  }
+
+  if (requestedBackend === "hermes") {
+    const key = await getApiKey();
+    if (!key) return sendError(res, 500, "Missing API_SERVER_KEY in ~/.hermes/.env");
+    return proxyStreamingRequest(
+      req,
+      res,
+      `${HERMES_API_BASE}/chat/completions`,
+      {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      { model: HERMES_MODEL, messages, stream: true },
+    );
+  }
+
+  if (messagesContainAudio(messages)) {
+    return sendError(
+      res,
+      400,
+      "Gemma 4 31B audio is not exposed by this Ollama build",
+      "This local 31B model reports vision/tools/thinking, not audio. Use image attachments here; audio needs a transcription route or the E4B audio-capable model.",
+    );
+  }
+
+  return proxyStreamingRequest(
+    req,
+    res,
+    `${OLLAMA_API_BASE}/chat/completions`,
+    { "Content-Type": "application/json", Accept: "text/event-stream" },
+    {
+      model: OLLAMA_MODEL,
+      messages,
+      stream: true,
+      temperature: 0.2,
+      max_tokens: 4096,
+      reasoning_effort: "none",
+    },
+  );
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || `${HOST}:${PORT}`}`);
@@ -220,5 +369,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`Cartha Hermes UI listening on http://${HOST}:${PORT}`);
-  console.log(`Proxying Hermes API at ${HERMES_API_BASE}`);
+  console.log(`Default backend: ${DEFAULT_BACKEND}; Ollama ${OLLAMA_MODEL} at ${OLLAMA_API_BASE}; Hermes at ${HERMES_API_BASE}`);
 });

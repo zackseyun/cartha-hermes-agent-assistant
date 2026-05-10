@@ -26,14 +26,15 @@ async function main() {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      messages: [{ role: "user", content: "Reply exactly: hermes ui ok" }],
+      messages: [{ role: "user", content: "Reply exactly: gemma ui ok" }],
+      backend: "ollama",
     }),
   });
   if (!res.ok || !res.body) throw new Error(`chat failed: ${res.status}`);
 
   const raw = await res.text();
   const text = parseDeltas(raw);
-  if (!text.includes("hermes ui ok")) {
+  if (!text.toLowerCase().includes("gemma ui ok")) {
     throw new Error(`expected streamed response to include smoke phrase; got ${text || raw.slice(0, 500)}`);
   }
   console.log("smoke ok");

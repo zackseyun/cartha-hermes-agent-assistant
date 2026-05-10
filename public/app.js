@@ -10,9 +10,15 @@ const sendButton = document.querySelector("#send");
 const stopButton = document.querySelector("#stop");
 const clearButton = document.querySelector("#clear-chat");
 const refreshButton = document.querySelector("#refresh-status");
+const attachmentsEl = document.querySelector("#attachments");
+const attachmentPreview = document.querySelector("#attachment-preview");
 
 let conversation = [];
 let activeController = null;
+
+function selectedBackend() {
+  return document.querySelector('input[name="backend"]:checked')?.value || "ollama";
+}
 
 function setStatus(kind, text, detail = "") {
   statusDot.className = `dot dot-${kind}`;
@@ -41,25 +47,68 @@ function setBusy(busy) {
   sendButton.disabled = busy;
   stopButton.disabled = !busy;
   promptEl.disabled = busy;
-  streamStatus.textContent = busy ? "Hermes is thinking…" : "Ready";
+  attachmentsEl.disabled = busy;
+  streamStatus.textContent = busy ? "Gemma is thinking…" : "Ready";
 }
 
 async function refreshStatus() {
-  setStatus("warn", "Checking Hermes…", "Calling local API server");
+  setStatus("warn", "Checking local model…", "Calling Ollama + Hermes gateway");
   try {
     const res = await fetch("/api/status");
     const data = await res.json();
     if (!data.ok) throw new Error(data.detail || data.error || "status failed");
-    setStatus("ok", "Hermes online", `${data.model} · ${data.latencyMs}ms · ${data.hermesApiBase}`);
+    setStatus(
+      "ok",
+      "Gemma 4 31B online",
+      `${data.model} · ${data.latencyMs}ms · Hermes ${data.hermesGateway}`,
+    );
   } catch (err) {
-    setStatus("danger", "Hermes offline", err.message || String(err));
+    setStatus("danger", "Local model offline", err.message || String(err));
   }
 }
 
-function buildMessages(userText) {
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error("Could not read file"));
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function buildUserContent(text) {
+  const files = Array.from(attachmentsEl.files || []);
+  if (files.length === 0) return text;
+
+  const parts = [{ type: "text", text: text || "Describe the attached image." }];
+  for (const file of files) {
+    if (!file.type.startsWith("image/")) continue;
+    const url = await fileToDataUrl(file);
+    parts.push({ type: "image_url", image_url: { url } });
+  }
+  return parts;
+}
+
+function attachmentLabel() {
+  const files = Array.from(attachmentsEl.files || []);
+  if (!files.length) return "";
+  return files.map((file) => file.name).join(", ");
+}
+
+function updateAttachmentPreview() {
+  const files = Array.from(attachmentsEl.files || []);
+  if (!files.length) {
+    attachmentPreview.textContent = "Vision is enabled. Audio needs E4B or transcription.";
+    return;
+  }
+  const totalMb = files.reduce((sum, file) => sum + file.size, 0) / 1024 / 1024;
+  attachmentPreview.textContent = `${files.length} image(s): ${files.map((file) => file.name).join(", ")} · ${totalMb.toFixed(1)} MB`;
+}
+
+function buildMessages(userContent) {
   const system = systemPromptEl.value.trim();
   const base = system ? [{ role: "system", content: system }] : [];
-  return [...base, ...conversation, { role: "user", content: userText }];
+  return [...base, ...conversation, { role: "user", content: userContent }];
 }
 
 function parseSseChunk(buffer, onEvent) {
@@ -89,7 +138,7 @@ function deltaFromChatChunk(payload) {
 function toolProgressText(payload) {
   try {
     const json = JSON.parse(payload);
-    const label = json?.name || json?.tool || json?.type || "tool";
+    const label = json?.label || json?.name || json?.tool || json?.type || "tool";
     const status = json?.status || json?.message || "running";
     return `Tool: ${label} · ${status}`;
   } catch {
@@ -100,11 +149,15 @@ function toolProgressText(payload) {
 async function sendPrompt(text) {
   if (activeController) return;
   const trimmed = text.trim();
-  if (!trimmed) return;
+  const hasAttachments = Boolean(attachmentsEl.files?.length);
+  if (!trimmed && !hasAttachments) return;
 
-  addMessage("user", trimmed);
+  const userContent = await buildUserContent(trimmed);
+  const attached = attachmentLabel();
+  const displayText = attached ? `${trimmed || "Describe this image."}\n\nAttached: ${attached}` : trimmed;
+  addMessage("user", displayText);
   const assistantNode = addMessage("assistant", "");
-  const messages = buildMessages(trimmed);
+  const messages = buildMessages(userContent);
   activeController = new AbortController();
   setBusy(true);
 
@@ -116,7 +169,7 @@ async function sendPrompt(text) {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({ messages, backend: selectedBackend() }),
       signal: activeController.signal,
     });
     if (!res.ok || !res.body) {
@@ -143,7 +196,8 @@ async function sendPrompt(text) {
       });
     }
     if (!assistantText.trim()) assistantNode.textContent = "(No text returned.)";
-    conversation.push({ role: "user", content: trimmed }, { role: "assistant", content: assistantText });
+    const userMemory = attached ? `${trimmed || "Image question."} [attached image(s): ${attached}]` : trimmed;
+    conversation.push({ role: "user", content: userMemory }, { role: "assistant", content: assistantText });
   } catch (err) {
     if (err.name === "AbortError") {
       assistantNode.textContent = assistantText || "Stopped.";
@@ -154,6 +208,8 @@ async function sendPrompt(text) {
     activeController = null;
     setBusy(false);
     promptEl.value = "";
+    attachmentsEl.value = "";
+    updateAttachmentPreview();
     promptEl.focus();
   }
 }
@@ -170,11 +226,12 @@ promptEl.addEventListener("keydown", (event) => {
   }
 });
 
+attachmentsEl.addEventListener("change", updateAttachmentPreview);
 stopButton.addEventListener("click", () => activeController?.abort());
 clearButton.addEventListener("click", () => {
   conversation = [];
   messagesEl.innerHTML = "";
-  addMessage("system", "New local Hermes session. Use Cmd+Enter to send.");
+  addMessage("system", "New local Gemma 4 31B session. Use Cmd+Enter to send.");
 });
 refreshButton.addEventListener("click", () => void refreshStatus());
 
@@ -185,5 +242,5 @@ document.querySelectorAll("[data-prompt]").forEach((button) => {
   });
 });
 
-addMessage("system", "New local Hermes session. Use Cmd+Enter to send. The browser never sees your Hermes API key.");
+addMessage("system", "New local Gemma 4 31B session. Use Cmd+Enter to send. The browser never sees your Hermes API key.");
 void refreshStatus();
