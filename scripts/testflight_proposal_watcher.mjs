@@ -13,6 +13,9 @@ const UI_URL = process.env.CARTHA_HERMES_UI_URL || "http://127.0.0.1:5128/?testf
 const USE_HERMES = process.env.CARTHA_TESTFLIGHT_USE_HERMES !== "0";
 const MAX_AGENT_MS = Number.parseInt(process.env.CARTHA_TESTFLIGHT_AGENT_TIMEOUT_MS || "90000", 10);
 const PRIME = process.argv.includes("--prime");
+const COMMIT_ARG_INDEX = process.argv.indexOf("--commit");
+const COMMIT_SHA = COMMIT_ARG_INDEX >= 0 ? process.argv[COMMIT_ARG_INDEX + 1] : "";
+const FORCE_PENDING = process.argv.includes("--pending");
 
 async function ensureParent(filePath) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -173,7 +176,58 @@ async function getCommitInput(sha) {
   return { sha, subject, author, committedAt, files, body };
 }
 
+async function createProposalForSha(sha, { updateState = false } = {}) {
+  const input = await getCommitInput(sha);
+  const fallback = heuristicDecision(input);
+  const agent = await hermesDecision(input);
+  const decision = agent || { ...fallback, source: "heuristic" };
+
+  const proposals = await readJson(PROPOSALS_PATH, []);
+  const existing = proposals.find((item) => item.sha === sha);
+  const now = new Date().toISOString();
+  const proposal = existing || {
+    id: `tf-${sha.slice(0, 12)}`,
+    sha,
+    short_sha: sha.slice(0, 8),
+    subject: input.subject,
+    author: input.author,
+    committed_at: input.committedAt,
+    changed_files: input.files,
+    created_at: now,
+  };
+  Object.assign(proposal, {
+    recommendation: decision.recommendation,
+    confidence: decision.confidence,
+    reason: decision.reason,
+    source: decision.source,
+    status: FORCE_PENDING ? "pending" : (decision.recommendation === "no" ? "auto_skipped" : "pending"),
+    updated_at: now,
+  });
+
+  const next = [proposal, ...proposals.filter((item) => item.sha !== sha)].slice(0, 50);
+  await writeJson(PROPOSALS_PATH, next);
+
+  if (updateState) {
+    const state = await readJson(STATE_PATH, {});
+    state.lastSeenSha = sha;
+    state.lastProposalAt = now;
+    await writeJson(STATE_PATH, state);
+  }
+
+  if (proposal.status === "pending") {
+    await notify(proposal);
+    console.log(`Hermes TestFlight proposal: ${proposal.recommendation.toUpperCase()} ${proposal.short_sha} — ${proposal.reason}`);
+  } else {
+    console.log(`Hermes auto-skipped TestFlight for ${proposal.short_sha}: ${proposal.reason}`);
+  }
+}
+
 async function main() {
+  if (COMMIT_SHA) {
+    await createProposalForSha(COMMIT_SHA, { updateState: false });
+    return;
+  }
+
   await git(["fetch", "origin", "main", "--quiet"], { timeout: 45_000 }).catch(() => null);
   const latest = await git(["rev-parse", "origin/main"]);
   const state = await readJson(STATE_PATH, {});
@@ -198,47 +252,7 @@ async function main() {
 
   // Keep the scarce-upload decision focused on the latest state of main. Older
   // intermediate commits should not trigger separate upload approvals.
-  const sha = shas.at(-1);
-  const input = await getCommitInput(sha);
-  const fallback = heuristicDecision(input);
-  const agent = await hermesDecision(input);
-  const decision = agent || { ...fallback, source: "heuristic" };
-
-  const proposals = await readJson(PROPOSALS_PATH, []);
-  const existing = proposals.find((item) => item.sha === sha);
-  const now = new Date().toISOString();
-  const proposal = existing || {
-    id: `tf-${sha.slice(0, 12)}`,
-    sha,
-    short_sha: sha.slice(0, 8),
-    subject: input.subject,
-    author: input.author,
-    committed_at: input.committedAt,
-    changed_files: input.files,
-    created_at: now,
-  };
-  Object.assign(proposal, {
-    recommendation: decision.recommendation,
-    confidence: decision.confidence,
-    reason: decision.reason,
-    source: decision.source,
-    status: decision.recommendation === "no" ? "auto_skipped" : "pending",
-    updated_at: now,
-  });
-
-  const next = [proposal, ...proposals.filter((item) => item.sha !== sha)].slice(0, 50);
-  await writeJson(PROPOSALS_PATH, next);
-
-  state.lastSeenSha = latest;
-  state.lastProposalAt = now;
-  await writeJson(STATE_PATH, state);
-
-  if (proposal.status === "pending") {
-    await notify(proposal);
-    console.log(`Hermes TestFlight proposal: ${proposal.recommendation.toUpperCase()} ${proposal.short_sha} — ${proposal.reason}`);
-  } else {
-    console.log(`Hermes auto-skipped TestFlight for ${proposal.short_sha}: ${proposal.reason}`);
-  }
+  await createProposalForSha(shas.at(-1), { updateState: true });
 }
 
 main().catch((err) => {

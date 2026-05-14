@@ -88,6 +88,20 @@
         </form>
       </main>
     </div>
+    <div id="testflight-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="testflight-modal-title">
+      <div class="modal-card">
+        <div class="eyebrow">Hermes release question</div>
+        <h2 id="testflight-modal-title">Should this commit be the TestFlight build?</h2>
+        <p id="testflight-modal-subtitle" class="modal-subtitle"></p>
+        <div id="testflight-modal-reason" class="modal-reason"></div>
+        <div id="testflight-modal-files" class="modal-files muted"></div>
+        <div class="modal-actions">
+          <button id="testflight-modal-yes" type="button" class="approve">Yes, upload</button>
+          <button id="testflight-modal-no" type="button" class="ghost">No, skip</button>
+          <button id="testflight-modal-later" type="button" class="ghost">Later</button>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

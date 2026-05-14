@@ -12,11 +12,20 @@ const clearButton = document.querySelector("#clear-chat");
 const refreshButton = document.querySelector("#refresh-status");
 const refreshTestFlightButton = document.querySelector("#refresh-testflight");
 const testFlightList = document.querySelector("#testflight-list");
+const testFlightModal = document.querySelector("#testflight-modal");
+const testFlightModalSubtitle = document.querySelector("#testflight-modal-subtitle");
+const testFlightModalReason = document.querySelector("#testflight-modal-reason");
+const testFlightModalFiles = document.querySelector("#testflight-modal-files");
+const testFlightModalYes = document.querySelector("#testflight-modal-yes");
+const testFlightModalNo = document.querySelector("#testflight-modal-no");
+const testFlightModalLater = document.querySelector("#testflight-modal-later");
 const attachmentsEl = document.querySelector("#attachments");
 const attachmentPreview = document.querySelector("#attachment-preview");
 
 let conversation = [];
 let activeController = null;
+let activeModalProposal = null;
+const deferredModalIds = new Set();
 
 function selectedBackend() {
   return document.querySelector('input[name="backend"]:checked')?.value || "hermes";
@@ -175,6 +184,28 @@ function renderTestFlightProposals(proposals) {
 
     testFlightList.appendChild(item);
   }
+
+  const pendingForModal = pending.find((proposal) => !deferredModalIds.has(proposal.id));
+  if (pendingForModal) {
+    showTestFlightModal(pendingForModal);
+  } else if (!pending.some((proposal) => proposal.id === activeModalProposal?.id)) {
+    hideTestFlightModal();
+  }
+}
+
+function showTestFlightModal(proposal) {
+  if (!testFlightModal) return;
+  activeModalProposal = proposal;
+  testFlightModalSubtitle.textContent = `${proposal.short_sha || ""} · ${proposal.subject || "Untitled commit"} · Hermes says ${proposal.recommendation || "hold"}`;
+  testFlightModalReason.textContent = proposal.reason || "Hermes left this for your decision.";
+  const files = Array.isArray(proposal.changed_files) ? proposal.changed_files.slice(0, 6) : [];
+  testFlightModalFiles.textContent = files.length ? `Changed: ${files.join(", ")}${proposal.changed_files.length > files.length ? "…" : ""}` : "";
+  testFlightModal.classList.remove("hidden");
+}
+
+function hideTestFlightModal() {
+  activeModalProposal = null;
+  testFlightModal?.classList.add("hidden");
 }
 
 async function refreshTestFlightProposals() {
@@ -398,6 +429,34 @@ clearButton.addEventListener("click", () => {
 });
 refreshButton.addEventListener("click", () => void refreshStatus());
 refreshTestFlightButton?.addEventListener("click", () => void refreshTestFlightProposals());
+testFlightModalYes?.addEventListener("click", async () => {
+  if (!activeModalProposal) return;
+  testFlightModalYes.disabled = true;
+  try {
+    await actOnTestFlightProposal(activeModalProposal.id, "approve");
+    hideTestFlightModal();
+  } catch (err) {
+    addMessage("system", `Could not approve TestFlight upload: ${err.message || err}`);
+  } finally {
+    testFlightModalYes.disabled = false;
+  }
+});
+testFlightModalNo?.addEventListener("click", async () => {
+  if (!activeModalProposal) return;
+  testFlightModalNo.disabled = true;
+  try {
+    await actOnTestFlightProposal(activeModalProposal.id, "skip");
+    hideTestFlightModal();
+  } catch (err) {
+    addMessage("system", `Could not skip TestFlight upload: ${err.message || err}`);
+  } finally {
+    testFlightModalNo.disabled = false;
+  }
+});
+testFlightModalLater?.addEventListener("click", () => {
+  if (activeModalProposal?.id) deferredModalIds.add(activeModalProposal.id);
+  hideTestFlightModal();
+});
 
 document.querySelectorAll("[data-prompt]").forEach((button) => {
   button.addEventListener("click", () => {
