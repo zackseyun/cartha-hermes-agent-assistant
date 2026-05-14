@@ -62,7 +62,7 @@ h1 { font-size: 27px; }
 h2 { font-size: 25px; margin-top: 6px; }
 .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; }
 .muted { color: var(--muted); font-size: 13px; }
-.status-card, .settings-card, .companion-card { padding: 16px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); border-radius: 20px; }
+.status-card, .settings-card, .companion-card, .testflight-card { padding: 16px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line); border-radius: 20px; }
 .status-row { display: flex; align-items: center; gap: 10px; font-weight: 700; }
 .dot { width: 10px; height: 10px; border-radius: 99px; box-shadow: 0 0 16px currentColor; }
 .dot-ok { color: var(--ok); background: var(--ok); }
@@ -70,6 +70,23 @@ h2 { font-size: 25px; margin-top: 6px; }
 .dot-danger { color: var(--danger); background: var(--danger); }
 .quick-actions { display: grid; gap: 10px; }
 .quick-actions button { text-align: left; }
+.card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.card-heading h3 { margin: 3px 0 0; font-size: 16px; }
+.card-heading button { padding: 7px 10px; border-radius: 11px; font-size: 12px; }
+.testflight-list { display: grid; gap: 10px; }
+.testflight-item { display: grid; gap: 7px; padding: 12px; border: 1px solid var(--line); border-radius: 16px; background: rgba(3, 7, 18, 0.34); }
+.testflight-item.is-pending { border-color: rgba(139, 92, 246, 0.5); background: rgba(139, 92, 246, 0.09); }
+.testflight-topline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.recommendation { padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; }
+.rec-yes { color: #dcfce7; background: rgba(52, 211, 153, 0.22); border: 1px solid rgba(52, 211, 153, 0.35); }
+.rec-hold { color: #fef3c7; background: rgba(245, 158, 11, 0.18); border: 1px solid rgba(245, 158, 11, 0.35); }
+.rec-no { color: #e2e8f0; background: rgba(148, 163, 184, 0.14); border: 1px solid rgba(148, 163, 184, 0.25); }
+.testflight-title { color: var(--text); font-size: 13px; font-weight: 800; line-height: 1.3; }
+.testflight-reason { color: #cbd5e1; font-size: 12px; line-height: 1.45; }
+.testflight-foot { font-size: 11px; }
+.testflight-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 3px; }
+.testflight-actions button { padding: 8px 11px; border-radius: 12px; font-size: 12px; }
+.testflight-actions .approve { color: #071013; background: linear-gradient(135deg, var(--ok), #a5f3fc); border-color: transparent; font-weight: 900; }
 .companion-card { display: grid; gap: 9px; }
 .companion-card a { color: #c4b5fd; font-weight: 700; text-decoration: none; }
 .companion-card a:hover { color: #a5f3fc; }

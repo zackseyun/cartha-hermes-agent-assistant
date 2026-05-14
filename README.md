@@ -47,6 +47,30 @@ npm run check
 npm run smoke
 ```
 
+## TestFlight approval gate
+
+The console can now act as the local approval surface for scarce iOS
+TestFlight uploads:
+
+1. A Hermes cron job runs `scripts/testflight_proposal_watcher.mjs` after new
+   `cartha.ai.mobile` commits land on `origin/main`.
+2. The watcher asks Hermes for a release recommendation when available, with a
+   deterministic fallback if the agent is offline.
+3. Recommended or uncertain commits are written to
+   `~/.hermes/cartha-testflight-proposals.json` and opened in this console via
+   a macOS notification.
+4. The **Yes, upload** chip dispatches `deploy-ios.yml` with the exact commit
+   SHA. The **No, skip** chip marks the proposal skipped without spending an
+   Apple upload slot.
+
+Useful env overrides:
+
+```bash
+CARTHA_MOBILE_REPO="/path/to/cartha.ai.mobile"
+CARTHA_TESTFLIGHT_USE_HERMES=0 # force heuristic-only proposals
+CARTHA_TESTFLIGHT_HERMES_MODEL="deepseek/deepseek-v4-flash"
+```
+
 ## LaunchAgent
 
 The local LaunchAgent is installed at `~/Library/LaunchAgents/com.cartha.hermes-ui.plist` and runs `node server.mjs` on port 5128.

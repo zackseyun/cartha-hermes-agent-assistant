@@ -10,6 +10,8 @@ const sendButton = document.querySelector("#send");
 const stopButton = document.querySelector("#stop");
 const clearButton = document.querySelector("#clear-chat");
 const refreshButton = document.querySelector("#refresh-status");
+const refreshTestFlightButton = document.querySelector("#refresh-testflight");
+const testFlightList = document.querySelector("#testflight-list");
 const attachmentsEl = document.querySelector("#attachments");
 const attachmentPreview = document.querySelector("#attachment-preview");
 
@@ -63,6 +65,129 @@ function creditText(value) {
   if (!Number.isFinite(value)) return "";
   const sign = value < 0 ? "-" : "";
   return ` · OpenRouter credit ${sign}$${Math.abs(value).toFixed(2)}`;
+}
+
+function formatDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function statusLabel(status) {
+  if (status === "pending") return "Needs decision";
+  if (status === "deploy_requested") return "Deploy requested";
+  if (status === "skipped") return "Skipped";
+  if (status === "auto_skipped") return "Auto-skipped";
+  if (status === "approval_failed") return "Approval failed";
+  return status || "Unknown";
+}
+
+function recommendationClass(recommendation) {
+  if (recommendation === "yes") return "rec-yes";
+  if (recommendation === "hold") return "rec-hold";
+  return "rec-no";
+}
+
+async function actOnTestFlightProposal(id, action) {
+  const res = await fetch(`/api/testflight/proposals/${encodeURIComponent(id)}/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+  await refreshTestFlightProposals();
+}
+
+function renderTestFlightProposals(proposals) {
+  testFlightList.innerHTML = "";
+  const pending = proposals.filter((proposal) => proposal.status === "pending");
+  const recent = proposals.filter((proposal) => proposal.status !== "pending").slice(0, 4);
+  const visible = pending.concat(recent);
+
+  if (!visible.length) {
+    testFlightList.textContent = "No TestFlight proposals yet. Hermes will add one after the next mobile commit.";
+    return;
+  }
+
+  for (const proposal of visible) {
+    const item = document.createElement("div");
+    item.className = `testflight-item ${proposal.status === "pending" ? "is-pending" : ""}`;
+
+    const top = document.createElement("div");
+    top.className = "testflight-topline";
+    const rec = document.createElement("span");
+    rec.className = `recommendation ${recommendationClass(proposal.recommendation)}`;
+    rec.textContent = proposal.recommendation || "hold";
+    const meta = document.createElement("span");
+    meta.className = "muted";
+    meta.textContent = `${proposal.short_sha || ""} · ${statusLabel(proposal.status)}${proposal.source ? ` · ${proposal.source}` : ""}`;
+    top.append(rec, meta);
+
+    const title = document.createElement("div");
+    title.className = "testflight-title";
+    title.textContent = proposal.subject || "Untitled commit";
+
+    const reason = document.createElement("div");
+    reason.className = "testflight-reason";
+    reason.textContent = proposal.reason || "No reason recorded.";
+
+    const foot = document.createElement("div");
+    foot.className = "testflight-foot muted";
+    const changed = Array.isArray(proposal.changed_files) ? proposal.changed_files.length : 0;
+    foot.textContent = `${formatDateTime(proposal.committed_at || proposal.created_at)} · ${changed} shown file${changed === 1 ? "" : "s"}`;
+
+    item.append(top, title, reason, foot);
+
+    if (proposal.status === "pending") {
+      const actions = document.createElement("div");
+      actions.className = "testflight-actions";
+      const approve = document.createElement("button");
+      approve.className = "approve";
+      approve.type = "button";
+      approve.textContent = "Yes, upload";
+      approve.addEventListener("click", async () => {
+        approve.disabled = true;
+        try {
+          await actOnTestFlightProposal(proposal.id, "approve");
+        } catch (err) {
+          addMessage("system", `Could not approve TestFlight upload: ${err.message || err}`);
+          approve.disabled = false;
+        }
+      });
+      const skip = document.createElement("button");
+      skip.className = "ghost";
+      skip.type = "button";
+      skip.textContent = "No, skip";
+      skip.addEventListener("click", async () => {
+        skip.disabled = true;
+        try {
+          await actOnTestFlightProposal(proposal.id, "skip");
+        } catch (err) {
+          addMessage("system", `Could not skip TestFlight upload: ${err.message || err}`);
+          skip.disabled = false;
+        }
+      });
+      actions.append(approve, skip);
+      item.append(actions);
+    }
+
+    testFlightList.appendChild(item);
+  }
+}
+
+async function refreshTestFlightProposals() {
+  if (!testFlightList) return;
+  testFlightList.textContent = "Checking pending commits…";
+  try {
+    const res = await fetch("/api/testflight/proposals");
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.detail || data.error || "proposal refresh failed");
+    renderTestFlightProposals(data.proposals || []);
+  } catch (err) {
+    testFlightList.textContent = `Could not load proposals: ${err.message || err}`;
+  }
 }
 
 async function refreshStatus() {
@@ -272,6 +397,7 @@ clearButton.addEventListener("click", () => {
   addMessage("system", "New Hermes agent session. Cmd+Enter sends immediately; agent mode can use local tools.");
 });
 refreshButton.addEventListener("click", () => void refreshStatus());
+refreshTestFlightButton?.addEventListener("click", () => void refreshTestFlightProposals());
 
 document.querySelectorAll("[data-prompt]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -282,3 +408,6 @@ document.querySelectorAll("[data-prompt]").forEach((button) => {
 
 addMessage("system", "New Hermes agent session. Cmd+Enter sends immediately. Agent mode uses MiMo V2.5 Pro through Hermes tools; DeepSeek mode is for smaller text tasks; Gemma mode is for local vision/chat.");
 void refreshStatus();
+void refreshTestFlightProposals();
+setInterval(refreshTestFlightProposals, 30_000);
+updateAttachmentPreview();

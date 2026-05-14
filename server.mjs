@@ -1,9 +1,12 @@
 import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const run = promisify(execFile);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = Number.parseInt(process.env.HERMES_UI_PORT || "5128", 10);
 const HOST = process.env.HERMES_UI_HOST || "127.0.0.1";
@@ -16,6 +19,10 @@ const OPENROUTER_AGENT_MODEL = process.env.OPENROUTER_AGENT_MODEL || "xiaomi/mim
 const OPENROUTER_SMALL_MODEL = process.env.OPENROUTER_SMALL_MODEL || "deepseek/deepseek-v4-flash";
 const DEFAULT_BACKEND = process.env.HERMES_UI_BACKEND || "hermes";
 const MAX_BODY_BYTES = Number.parseInt(process.env.HERMES_UI_MAX_BODY_BYTES || "32000000", 10);
+const HOME = process.env.HOME || "";
+const TESTFLIGHT_PROPOSALS_PATH =
+  process.env.CARTHA_TESTFLIGHT_PROPOSALS_PATH || path.join(HOME, ".hermes", "cartha-testflight-proposals.json");
+const CARTHA_GITHUB_REPO = process.env.CARTHA_GITHUB_REPO || "zackseyun/cartha.ai.mobile";
 
 const CONTENT_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -118,6 +125,128 @@ async function readJsonBody(req) {
   }
   if (chunks.length === 0) return {};
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function readJsonFile(filePath, fallback) {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+async function writeJsonFile(filePath, value) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp`;
+  await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`);
+  await fs.rename(tmp, filePath);
+}
+
+function publicProposal(proposal) {
+  return {
+    id: proposal.id,
+    sha: proposal.sha,
+    short_sha: proposal.short_sha,
+    subject: proposal.subject,
+    author: proposal.author,
+    committed_at: proposal.committed_at,
+    changed_files: Array.isArray(proposal.changed_files) ? proposal.changed_files.slice(0, 20) : [],
+    recommendation: proposal.recommendation,
+    confidence: proposal.confidence,
+    reason: proposal.reason,
+    source: proposal.source,
+    status: proposal.status,
+    created_at: proposal.created_at,
+    updated_at: proposal.updated_at,
+    approved_at: proposal.approved_at,
+    skipped_at: proposal.skipped_at,
+    deploy_requested_at: proposal.deploy_requested_at,
+    deploy_stdout: proposal.deploy_stdout,
+    deploy_error: proposal.deploy_error,
+  };
+}
+
+async function handleTestFlightProposals(_req, res) {
+  const proposals = await readJsonFile(TESTFLIGHT_PROPOSALS_PATH, []);
+  const list = Array.isArray(proposals) ? proposals : [];
+  sendJson(res, 200, {
+    ok: true,
+    path: TESTFLIGHT_PROPOSALS_PATH,
+    proposals: list.map(publicProposal),
+  });
+}
+
+async function handleTestFlightAction(req, res, id, action) {
+  let body = {};
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendError(res, err.status || 400, err.message || "Invalid JSON body");
+  }
+
+  const proposals = await readJsonFile(TESTFLIGHT_PROPOSALS_PATH, []);
+  if (!Array.isArray(proposals)) return sendError(res, 500, "Proposal store is malformed");
+  const index = proposals.findIndex((proposal) => proposal?.id === id);
+  if (index < 0) return sendError(res, 404, "Proposal not found");
+
+  const proposal = proposals[index];
+  const now = new Date().toISOString();
+  if (action === "skip") {
+    proposals[index] = {
+      ...proposal,
+      status: "skipped",
+      skipped_at: now,
+      updated_at: now,
+    };
+    await writeJsonFile(TESTFLIGHT_PROPOSALS_PATH, proposals);
+    return sendJson(res, 200, { ok: true, proposal: publicProposal(proposals[index]) });
+  }
+
+  if (action !== "approve") return sendError(res, 404, "Unknown TestFlight action");
+  if (!/^[0-9a-f]{40}$/iu.test(String(proposal.sha || ""))) {
+    return sendError(res, 400, "Proposal has an invalid commit SHA");
+  }
+
+  const reason = String(body.reason || `Hermes approved TestFlight for ${proposal.short_sha}: ${proposal.reason || proposal.subject}`).slice(0, 250);
+  try {
+    const { stdout, stderr } = await run(
+      "gh",
+      [
+        "workflow",
+        "run",
+        "deploy-ios.yml",
+        "--repo",
+        CARTHA_GITHUB_REPO,
+        "--ref",
+        "main",
+        "-f",
+        `sha=${proposal.sha}`,
+        "-f",
+        `reason=${reason}`,
+      ],
+      { timeout: 30_000, maxBuffer: 1024 * 1024 },
+    );
+    proposals[index] = {
+      ...proposal,
+      status: "deploy_requested",
+      approved_at: now,
+      deploy_requested_at: now,
+      deploy_stdout: `${stdout || ""}${stderr || ""}`.trim(),
+      deploy_error: "",
+      updated_at: now,
+    };
+    await writeJsonFile(TESTFLIGHT_PROPOSALS_PATH, proposals);
+    return sendJson(res, 200, { ok: true, proposal: publicProposal(proposals[index]) });
+  } catch (err) {
+    proposals[index] = {
+      ...proposal,
+      status: "approval_failed",
+      deploy_error: String(err?.stderr || err?.stdout || err?.message || err).slice(0, 1500),
+      updated_at: now,
+    };
+    await writeJsonFile(TESTFLIGHT_PROPOSALS_PATH, proposals);
+    return sendError(res, 502, "Could not dispatch TestFlight workflow", proposals[index].deploy_error);
+  }
 }
 
 async function serveStatic(_req, res, pathname) {
@@ -399,6 +528,11 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || `${HOST}:${PORT}`}`);
     if (req.method === "GET" && url.pathname === "/api/status") return handleStatus(req, res);
+    if (req.method === "GET" && url.pathname === "/api/testflight/proposals") return handleTestFlightProposals(req, res);
+    const testFlightAction = url.pathname.match(/^\/api\/testflight\/proposals\/([^/]+)\/(approve|skip)$/u);
+    if (req.method === "POST" && testFlightAction) {
+      return handleTestFlightAction(req, res, decodeURIComponent(testFlightAction[1]), testFlightAction[2]);
+    }
     if (req.method === "POST" && url.pathname === "/api/chat") return proxyChat(req, res);
     if (req.method === "GET" || req.method === "HEAD") return serveStatic(req, res, url.pathname);
     return sendError(res, 405, "Method not allowed");
