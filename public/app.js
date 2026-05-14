@@ -116,7 +116,7 @@ function renderTestFlightProposals(proposals) {
   const visible = pending.concat(recent);
 
   if (!visible.length) {
-    testFlightList.textContent = "No TestFlight proposals yet. Hermes will add one after the next mobile commit.";
+    testFlightList.textContent = "No Apple upload proposals yet. Hermes will add one after the next mobile commit or main push.";
     return;
   }
 
@@ -131,7 +131,7 @@ function renderTestFlightProposals(proposals) {
     rec.textContent = proposal.recommendation || "hold";
     const meta = document.createElement("span");
     meta.className = "muted";
-    meta.textContent = `${proposal.short_sha || ""} · ${statusLabel(proposal.status)}${proposal.source ? ` · ${proposal.source}` : ""}`;
+    meta.textContent = `${proposal.channel_label || "Apple upload"} · ${proposal.short_sha || ""} · ${statusLabel(proposal.status)}${proposal.source ? ` · ${proposal.source}` : ""}`;
     top.append(rec, meta);
 
     const title = document.createElement("div");
@@ -161,7 +161,7 @@ function renderTestFlightProposals(proposals) {
         try {
           await actOnTestFlightProposal(proposal.id, "approve");
         } catch (err) {
-          addMessage("system", `Could not approve TestFlight upload: ${err.message || err}`);
+          addMessage("system", `Could not approve ${proposal.channel_label || "Apple upload"}: ${err.message || err}`);
           approve.disabled = false;
         }
       });
@@ -174,7 +174,7 @@ function renderTestFlightProposals(proposals) {
         try {
           await actOnTestFlightProposal(proposal.id, "skip");
         } catch (err) {
-          addMessage("system", `Could not skip TestFlight upload: ${err.message || err}`);
+          addMessage("system", `Could not skip ${proposal.channel_label || "Apple upload"}: ${err.message || err}`);
           skip.disabled = false;
         }
       });
@@ -196,7 +196,7 @@ function renderTestFlightProposals(proposals) {
 function showTestFlightModal(proposal) {
   if (!testFlightModal) return;
   activeModalProposal = proposal;
-  testFlightModalSubtitle.textContent = `${proposal.short_sha || ""} · ${proposal.subject || "Untitled commit"} · Hermes says ${proposal.recommendation || "hold"}`;
+  testFlightModalSubtitle.textContent = `${proposal.channel_label || "Apple upload"} · ${proposal.short_sha || ""} · ${proposal.subject || "Untitled commit"} · Hermes says ${proposal.recommendation || "hold"}`;
   testFlightModalReason.textContent = proposal.reason || "Hermes left this for your decision.";
   const files = Array.isArray(proposal.changed_files) ? proposal.changed_files.slice(0, 6) : [];
   testFlightModalFiles.textContent = files.length ? `Changed: ${files.join(", ")}${proposal.changed_files.length > files.length ? "…" : ""}` : "";
@@ -436,7 +436,7 @@ testFlightModalYes?.addEventListener("click", async () => {
     await actOnTestFlightProposal(activeModalProposal.id, "approve");
     hideTestFlightModal();
   } catch (err) {
-    addMessage("system", `Could not approve TestFlight upload: ${err.message || err}`);
+    addMessage("system", `Could not approve ${activeModalProposal.channel_label || "Apple upload"}: ${err.message || err}`);
   } finally {
     testFlightModalYes.disabled = false;
   }
@@ -448,7 +448,7 @@ testFlightModalNo?.addEventListener("click", async () => {
     await actOnTestFlightProposal(activeModalProposal.id, "skip");
     hideTestFlightModal();
   } catch (err) {
-    addMessage("system", `Could not skip TestFlight upload: ${err.message || err}`);
+    addMessage("system", `Could not skip ${activeModalProposal.channel_label || "Apple upload"}: ${err.message || err}`);
   } finally {
     testFlightModalNo.disabled = false;
   }

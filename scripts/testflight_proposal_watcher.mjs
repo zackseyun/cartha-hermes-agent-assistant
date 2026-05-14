@@ -16,6 +16,24 @@ const PRIME = process.argv.includes("--prime");
 const COMMIT_ARG_INDEX = process.argv.indexOf("--commit");
 const COMMIT_SHA = COMMIT_ARG_INDEX >= 0 ? process.argv[COMMIT_ARG_INDEX + 1] : "";
 const FORCE_PENDING = process.argv.includes("--pending");
+const RENOTIFY = process.argv.includes("--renotify");
+const CHANNEL_ARG_INDEX = process.argv.indexOf("--channel");
+const CHANNEL_ARG = CHANNEL_ARG_INDEX >= 0 ? process.argv[CHANNEL_ARG_INDEX + 1] : "all";
+const CHANNELS = {
+  ios_testflight: {
+    idPrefix: "ios-tf",
+    label: "iOS TestFlight",
+    workflow: "deploy-ios.yml",
+    recommendationPrompt: "iOS TestFlight upload",
+  },
+  macos_appstore: {
+    idPrefix: "mac-mas",
+    label: "Mac App Store",
+    workflow: "deploy-macos.yml",
+    recommendationPrompt: "Mac App Store Connect upload",
+  },
+};
+const SELECTED_CHANNELS = CHANNEL_ARG === "all" ? Object.keys(CHANNELS) : [CHANNEL_ARG].filter((key) => CHANNELS[key]);
 
 async function ensureParent(filePath) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -60,17 +78,21 @@ function extractJsonObject(text) {
   return null;
 }
 
-function heuristicDecision({ subject, files, body }) {
+function heuristicDecision({ subject, files, body }, channel = CHANNELS.ios_testflight) {
   const lowerSubject = subject.toLowerCase();
-  const relevantFiles = files.filter((file) =>
-    file.startsWith("cartha_ai_mobile/lib/") ||
-    file.startsWith("cartha_ai_mobile/ios/") ||
-    file.startsWith("cartha_ai_mobile/assets/") ||
-    file.startsWith("packages/") ||
-    file.startsWith("features/") ||
-    file === "cartha_ai_mobile/pubspec.yaml" ||
-    file === "cartha_ai_mobile/pubspec.lock",
-  );
+  const relevantFiles = files.filter((file) => {
+    const common =
+      file.startsWith("cartha_ai_mobile/lib/") ||
+      file.startsWith("cartha_ai_mobile/assets/") ||
+      file.startsWith("packages/") ||
+      file.startsWith("features/") ||
+      file === "cartha_ai_mobile/pubspec.yaml" ||
+      file === "cartha_ai_mobile/pubspec.lock";
+    if (channel === CHANNELS.macos_appstore) {
+      return common || file.startsWith("cartha_ai_mobile/macos/") || file === ".github/workflows/deploy-macos.yml";
+    }
+    return common || file.startsWith("cartha_ai_mobile/ios/") || file === ".github/workflows/deploy-ios.yml";
+  });
   const docsOnly = files.length > 0 && files.every((file) =>
     file.endsWith(".md") ||
     file.includes("/docs/") ||
@@ -78,8 +100,8 @@ function heuristicDecision({ subject, files, body }) {
     file.includes("README") ||
     file.includes("DESIGN")
   );
-  const explicitYes = /\[(testflight|tf)\]/iu.test(subject);
-  const explicitNo = /\[(skip[ -]?testflight|no[ -]?tf|skip tf)\]/iu.test(subject);
+  const explicitYes = channel === CHANNELS.macos_appstore ? /\[(macos-appstore|macos-store|mas)\]/iu.test(subject) : /\[(testflight|tf)\]/iu.test(subject);
+  const explicitNo = channel === CHANNELS.macos_appstore ? /\[(skip[ -]?macos|no[ -]?mas|skip mas)\]/iu.test(subject) : /\[(skip[ -]?testflight|no[ -]?tf|skip tf)\]/iu.test(subject);
   const releaseKeywords = /(release|hotfix|urgent|review|ship|testflight|tf|app store|store)/iu.test(lowerSubject);
   const userFacingKeywords = /(fix|feat|polish|refine|auth|login|onboarding|call|video|camera|push|notification|purchase|profile|message|bible|clip|crash|blank|blocked|room|huddl|drop-in|connect)/iu.test(lowerSubject);
 
@@ -87,28 +109,28 @@ function heuristicDecision({ subject, files, body }) {
     return {
       recommendation: "no",
       confidence: 0.98,
-      reason: "Commit explicitly opts out of TestFlight.",
+      reason: `Commit explicitly opts out of ${channel.label}.`,
     };
   }
   if (explicitYes) {
     return {
       recommendation: "yes",
       confidence: 0.98,
-      reason: "Commit explicitly requests a TestFlight upload.",
+      reason: `Commit explicitly requests ${channel.label}.`,
     };
   }
   if (docsOnly || relevantFiles.length === 0) {
     return {
       recommendation: "no",
       confidence: 0.86,
-      reason: "No user-facing iOS runtime files changed, so this should not spend an Apple upload slot.",
+      reason: `No user-facing ${channel.label} runtime files changed, so this should not spend an Apple upload slot.`,
     };
   }
   if (releaseKeywords) {
     return {
       recommendation: "yes",
       confidence: 0.78,
-      reason: "This looks release-oriented and touches iOS/mobile-relevant files.",
+      reason: `This looks release-oriented and touches files relevant to ${channel.label}.`,
     };
   }
   if (userFacingKeywords) {
@@ -121,13 +143,13 @@ function heuristicDecision({ subject, files, body }) {
   return {
     recommendation: "no",
     confidence: 0.7,
-    reason: "Mobile files changed, but the commit does not look release-critical enough to spend a TestFlight slot by default.",
+    reason: `Mobile files changed, but the commit does not look release-critical enough to spend a ${channel.label} slot by default.`,
   };
 }
 
-async function hermesDecision(input) {
+async function hermesDecision(input, channel = CHANNELS.ios_testflight) {
   if (!USE_HERMES) return null;
-  const prompt = `You are Hermes, acting as Cartha's TestFlight release steward. Decide whether this exact commit should spend one scarce Apple/TestFlight upload slot. Return ONLY strict JSON with keys: recommendation (yes|hold|no), confidence (0..1), reason (one concise sentence). Prefer hold/no unless the commit is release-critical, user-facing enough to require physical-device/TestFlight validation, or explicitly asks for TestFlight.\n\nCommit: ${input.sha}\nSubject: ${input.subject}\nAuthor: ${input.author}\nFiles:\n${input.files.map((f) => `- ${f}`).join("\n")}\n\nDiff/stat/context:\n${input.body.slice(0, 8000)}`;
+  const prompt = `You are Hermes, acting as Cartha's Apple release steward. Decide whether this exact commit should spend one scarce ${channel.recommendationPrompt} slot. Return ONLY strict JSON with keys: recommendation (yes|hold|no), confidence (0..1), reason (one concise sentence). Prefer hold/no unless the commit is release-critical, user-facing enough to require physical-device or App Store validation, or explicitly asks for this upload lane.\n\nUpload lane: ${channel.label}\nWorkflow: ${channel.workflow}\nCommit: ${input.sha}\nSubject: ${input.subject}\nAuthor: ${input.author}\nFiles:\n${input.files.map((f) => `- ${f}`).join("\n")}\n\nDiff/stat/context:\n${input.body.slice(0, 8000)}`;
   try {
     const { stdout } = await run("hermes", ["--oneshot", prompt, "--provider", process.env.CARTHA_TESTFLIGHT_HERMES_PROVIDER || "openrouter", "--model", process.env.CARTHA_TESTFLIGHT_HERMES_MODEL || "deepseek/deepseek-v4-flash"], {
       cwd: MOBILE_REPO,
@@ -150,7 +172,7 @@ async function hermesDecision(input) {
 
 async function notify(proposal) {
   const notifier = process.env.CARTHA_TESTFLIGHT_NOTIFIER || "terminal-notifier";
-  const title = proposal.recommendation === "yes" ? "Hermes recommends TestFlight" : "Hermes wants your TestFlight call";
+  const title = proposal.recommendation === "yes" ? `Hermes recommends ${proposal.channel_label}` : `Hermes wants your ${proposal.channel_label} call`;
   const subtitle = `${proposal.short_sha} · ${proposal.subject.slice(0, 60)}`;
   const message = `${proposal.reason} Tap to approve or skip.`;
   try {
@@ -176,35 +198,42 @@ async function getCommitInput(sha) {
   return { sha, subject, author, committedAt, files, body };
 }
 
-async function createProposalForSha(sha, { updateState = false } = {}) {
+async function createProposalForSha(sha, channelKey = "ios_testflight", { updateState = false } = {}) {
+  const channel = CHANNELS[channelKey] || CHANNELS.ios_testflight;
   const input = await getCommitInput(sha);
-  const fallback = heuristicDecision(input);
-  const agent = await hermesDecision(input);
+  const fallback = heuristicDecision(input, channel);
+  const agent = await hermesDecision(input, channel);
   const decision = agent || { ...fallback, source: "heuristic" };
 
   const proposals = await readJson(PROPOSALS_PATH, []);
-  const existing = proposals.find((item) => item.sha === sha);
+  const existing = proposals.find((item) => item.sha === sha && (item.channel || "ios_testflight") === channelKey);
   const now = new Date().toISOString();
   const proposal = existing || {
-    id: `tf-${sha.slice(0, 12)}`,
+    id: `${channel.idPrefix}-${sha.slice(0, 12)}`,
     sha,
     short_sha: sha.slice(0, 8),
+    channel: channelKey,
+    channel_label: channel.label,
+    workflow: channel.workflow,
     subject: input.subject,
     author: input.author,
     committed_at: input.committedAt,
     changed_files: input.files,
     created_at: now,
   };
+  const proposedStatus = FORCE_PENDING ? "pending" : (decision.recommendation === "no" ? "auto_skipped" : "pending");
+  const terminalStatus = existing && ["skipped", "deploy_requested"].includes(existing.status);
+
   Object.assign(proposal, {
     recommendation: decision.recommendation,
     confidence: decision.confidence,
     reason: decision.reason,
     source: decision.source,
-    status: FORCE_PENDING ? "pending" : (decision.recommendation === "no" ? "auto_skipped" : "pending"),
+    status: terminalStatus ? existing.status : proposedStatus,
     updated_at: now,
   });
 
-  const next = [proposal, ...proposals.filter((item) => item.sha !== sha)].slice(0, 50);
+  const next = [proposal, ...proposals.filter((item) => !(item.sha === sha && (item.channel || "ios_testflight") === channelKey))].slice(0, 80);
   await writeJson(PROPOSALS_PATH, next);
 
   if (updateState) {
@@ -214,17 +243,22 @@ async function createProposalForSha(sha, { updateState = false } = {}) {
     await writeJson(STATE_PATH, state);
   }
 
-  if (proposal.status === "pending") {
+  const shouldNotify = proposal.status === "pending" && (!existing || existing.status !== "pending" || RENOTIFY);
+  if (shouldNotify) {
     await notify(proposal);
-    console.log(`Hermes TestFlight proposal: ${proposal.recommendation.toUpperCase()} ${proposal.short_sha} — ${proposal.reason}`);
+    console.log(`Hermes ${channel.label} proposal: ${proposal.recommendation.toUpperCase()} ${proposal.short_sha} — ${proposal.reason}`);
+  } else if (proposal.status === "pending") {
+    console.log(`Hermes ${channel.label} proposal already pending for ${proposal.short_sha}.`);
   } else {
-    console.log(`Hermes auto-skipped TestFlight for ${proposal.short_sha}: ${proposal.reason}`);
+    console.log(`Hermes kept ${channel.label} proposal ${proposal.status} for ${proposal.short_sha}: ${proposal.reason}`);
   }
 }
 
 async function main() {
   if (COMMIT_SHA) {
-    await createProposalForSha(COMMIT_SHA, { updateState: false });
+    for (const channelKey of SELECTED_CHANNELS) {
+      await createProposalForSha(COMMIT_SHA, channelKey, { updateState: false });
+    }
     return;
   }
 
@@ -252,7 +286,9 @@ async function main() {
 
   // Keep the scarce-upload decision focused on the latest state of main. Older
   // intermediate commits should not trigger separate upload approvals.
-  await createProposalForSha(shas.at(-1), { updateState: true });
+  for (const channelKey of SELECTED_CHANNELS) {
+    await createProposalForSha(shas.at(-1), channelKey, { updateState: true });
+  }
 }
 
 main().catch((err) => {

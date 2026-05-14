@@ -147,6 +147,9 @@ function publicProposal(proposal) {
     id: proposal.id,
     sha: proposal.sha,
     short_sha: proposal.short_sha,
+    channel: proposal.channel || "ios_testflight",
+    channel_label: proposal.channel_label || "iOS TestFlight",
+    workflow: proposal.workflow || "deploy-ios.yml",
     subject: proposal.subject,
     author: proposal.author,
     committed_at: proposal.committed_at,
@@ -207,14 +210,20 @@ async function handleTestFlightAction(req, res, id, action) {
     return sendError(res, 400, "Proposal has an invalid commit SHA");
   }
 
-  const reason = String(body.reason || `Hermes approved TestFlight for ${proposal.short_sha}: ${proposal.reason || proposal.subject}`).slice(0, 250);
+  const workflow = String(proposal.workflow || "deploy-ios.yml");
+  if (!/^[\w.-]+\.ya?ml$/u.test(workflow)) {
+    return sendError(res, 400, "Proposal has an invalid workflow");
+  }
+
+  const channelLabel = proposal.channel_label || "Apple upload";
+  const reason = String(body.reason || `Hermes approved ${channelLabel} for ${proposal.short_sha}: ${proposal.reason || proposal.subject}`).slice(0, 250);
   try {
     const { stdout, stderr } = await run(
       "gh",
       [
         "workflow",
         "run",
-        "deploy-ios.yml",
+        workflow,
         "--repo",
         CARTHA_GITHUB_REPO,
         "--ref",

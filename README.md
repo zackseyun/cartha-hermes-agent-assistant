@@ -47,21 +47,23 @@ npm run check
 npm run smoke
 ```
 
-## TestFlight approval gate
+## Apple upload approval gate
 
-The console can now act as the local approval modal for scarce iOS TestFlight
-uploads:
+The console can now act as the local approval modal for scarce Apple upload
+lanes, currently **iOS TestFlight** and **Mac App Store**:
 
-1. A local `post-commit` hook in `cartha.ai.mobile` runs
-   `scripts/testflight_proposal_watcher.mjs --commit <sha> --pending`.
+1. Local Git hooks in `cartha.ai.mobile` run
+   `scripts/testflight_proposal_watcher.mjs --commit <sha> --pending` after
+   commits, merges, rewrites, and main pushes.
 2. Hermes recommends **yes**, **hold**, or **no**, but every local commit remains
    pending until Zack chooses.
 3. The console shows a Hermes-style modal with **Yes, upload**, **No, skip**,
    and **Later** chips. Pending proposals also stay in the left rail.
-4. **Yes, upload** dispatches `deploy-ios.yml` with the exact commit SHA.
+4. **Yes, upload** dispatches the proposal's workflow (`deploy-ios.yml` or
+   `deploy-macos.yml`) with the exact commit SHA.
    **No, skip** records the skip without spending an Apple upload slot.
 
-Install or repair the hook:
+Install or repair the hooks:
 
 ```bash
 ./scripts/install_cartha_testflight_commit_hook.sh
