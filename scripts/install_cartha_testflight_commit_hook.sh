@@ -16,10 +16,13 @@ sha="\${1:-}"
 case "\$sha" in
   0000000000000000000000000000000000000000) exit 0 ;;
 esac
-(
-  cd "$MOBILE_REPO"
-  node "$HERMES_LOCAL_REPO/scripts/testflight_proposal_watcher.mjs" --commit "\$sha" --pending
-) >> "$LOG_DIR/cartha-testflight-commit-prompt.log" 2>&1 &
+node_bin="\${CARTHA_NODE_BIN:-\$(command -v node || true)}"
+[ -n "\$node_bin" ] || exit 0
+nohup /bin/bash -c '
+  set -euo pipefail
+  cd "\$1"
+  exec "\$2" "\$3/scripts/testflight_proposal_watcher.mjs" --commit "\$4" --pending
+' cartha-hermes-hook "$MOBILE_REPO" "\$node_bin" "$HERMES_LOCAL_REPO" "\$sha" >> "$LOG_DIR/cartha-testflight-commit-prompt.log" 2>&1 < /dev/null &
 HOOK
 chmod +x "$HELPER"
 
