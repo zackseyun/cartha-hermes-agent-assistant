@@ -27,8 +27,8 @@ Gemma 4 31B vision support depends on the Ollama/model build you install. Audio 
 ## Quick start
 
 ```bash
-git clone https://github.com/zackseyun/hermes-local-agent-kit.git
-cd hermes-local-agent-kit
+git clone https://github.com/zackseyun/cartha-hermes-agent-assistant.git
+cd cartha-hermes-agent-assistant
 npm install
 node scripts/install.mjs
 
@@ -129,7 +129,7 @@ npm start
 The kit ships a 30-minute autonomous heartbeat that lives in `templates/heartbeat/`:
 
 - `heartbeat.sh` — collects recent activity, OpenClaw context, pending agent-sync jobs, and a system snapshot, then pipes the bundle into `heartbeat-agent.py`.
-- `heartbeat-agent.py` — local model (default: `qwen3.6:35b-hermes-256k` on Ollama) picks exactly one tool. Tools include `noop`, `journal_entry`, `notify_user`, `show_visual`, `notify_user_dialog`, `set_timer`, `mark_job_done`, `web_search`, `safe_shell_query`, `fetch_url`, `escalate`, `propose_quit_app`, `propose_cleanup`.
+- `heartbeat-agent.py` — local model (default: `qwen3.6:35b-hermes-256k` on Ollama) picks exactly one tool. Tools include `noop`, `journal_entry`, `notify_user`, `show_visual`, `notify_user_dialog`, `set_timer`, `mark_job_done`, `web_search`, `safe_shell_query`, `fetch_url`, `read_calendar_today`, `read_mail_recent`, `escalate`, `propose_quit_app`, `propose_cleanup`.
 - `heartbeat-cleanup.sh` — gated cleanup executor (empty trash, Xcode DerivedData, iOS simulator caches, etc.).
 - `heartbeat-config/policy.json` — phase + allowlist + denylist + cleanup actions + `trusted_autonomy` block for direct edit/test/build/git tasks in allowed roots.
 
@@ -144,6 +144,26 @@ cp templates/heartbeat-config/policy.json ~/.hermes/heartbeat-config/
 chmod +x ~/.hermes/scripts/heartbeat*.sh ~/.hermes/scripts/heartbeat-agent.py
 # Schedule via launchd or cron — see policy.json _comment for phase semantics.
 ```
+
+## Microsoft 365 (calendar + mail) integration
+
+The heartbeat's `read_calendar_today` and `read_mail_recent` tools talk to your Microsoft 365 (Outlook) account via the open-source [`@softeria/ms-365-mcp-server`](https://github.com/softeria/ms-365-mcp-server). The integration uses **stdio transport per call** rather than running a persistent service:
+
+- Spawns the MCP server, does the JSON-RPC handshake, calls one tool, exits.
+- ~3-5 s per call — fine at heartbeat cadence.
+- Reuses MSAL-cached credentials from a prior `--login` (device-code flow, no Azure app registration needed).
+- Read-only mode hardcoded — no accidental sends or deletes.
+- Resilient: no long-running socket, no port to claim, no OAuth client plumbing; each call independent.
+
+Install + log in once:
+
+```bash
+npm install -g @softeria/ms-365-mcp-server
+~/.npm-global/bin/ms-365-mcp-server --login   # device-code flow in your browser
+~/.npm-global/bin/ms-365-mcp-server --verify-login
+```
+
+Until you've logged in, the heartbeat tools will gracefully degrade with a "ms365 not logged in — run X" message in the journal/bubble rather than crashing.
 
 ## SearXNG web search backend
 

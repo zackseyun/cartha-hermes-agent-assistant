@@ -90,6 +90,15 @@ ESCALATION_MODEL = os.environ.get("HEARTBEAT_ESCALATION_MODEL", "deepseek/deepse
 # Local SearXNG instance for web_search tool. See ~/.hermes/searxng/settings.yml.
 SEARXNG_URL = os.environ.get("HEARTBEAT_SEARXNG_URL", "http://127.0.0.1:8888")
 
+# ms-365-mcp-server binary for read_calendar_today / read_mail_recent tools.
+# We spawn the server in stdio mode per call (resilient — no long-running
+# socket, no OAuth client plumbing, reuses MSAL cache from prior --login).
+MS365_MCP_NODE = os.environ.get("HEARTBEAT_NODE_BIN", "/opt/homebrew/bin/node")
+MS365_MCP_JS = os.environ.get(
+    "HEARTBEAT_MS365_MCP_JS",
+    str(HOME / ".npm-global" / "lib" / "node_modules" / "@softeria" / "ms-365-mcp-server" / "dist" / "index.js"),
+)
+
 # Pre-deepseek dedup: how many recent escalations to compare against before
 # allowing another deepseek call on the same situation.
 DEDUP_LOOKBACK_N = int(os.environ.get("HEARTBEAT_DEDUP_LOOKBACK", "10"))
@@ -184,6 +193,114 @@ def run_fetch_url(url: str) -> tuple[bool, str]:
         return (True, raw[:5000])
     except Exception as e:
         return (False, f"fetch failed: {e}")
+
+
+def call_ms365_mcp(tool_name: str, arguments: dict, timeout: int = 30) -> tuple[bool, str]:
+    """Spawn the ms-365-mcp-server in stdio mode, do the MCP handshake, call
+    one tool, return the result text. Returns (ok, text). Future-proof because:
+      - Stateless per call — no long-running service, no port, no socket leak.
+      - Reuses MSAL-cached Microsoft 365 credentials from prior `--login`.
+      - Standard MCP JSON-RPC over stdio — protocol is stable and versioned.
+      - If a single call hangs, the timeout kills it without affecting others.
+    """
+    if not Path(MS365_MCP_JS).exists():
+        return (False, f"ms-365-mcp-server not installed at {MS365_MCP_JS}. Run: npm install -g @softeria/ms-365-mcp-server")
+    argv = [MS365_MCP_NODE, MS365_MCP_JS, "--preset", "mail,calendar", "--read-only"]
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as e:
+        return (False, f"failed to spawn ms-365-mcp-server: {e}")
+
+    def send(msg: dict) -> None:
+        assert proc.stdin is not None
+        proc.stdin.write(json.dumps(msg) + "\n")
+        proc.stdin.flush()
+
+    def read_response(want_id: int, deadline: float) -> dict | None:
+        """Read JSON-RPC frames until we see the matching id; skip notifications/logs."""
+        assert proc.stdout is not None
+        while time.time() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                return None
+            line = line.strip()
+            if not line or not line.startswith("{"):
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if obj.get("id") == want_id:
+                return obj
+            # else: notification or unrelated response — keep reading
+        return None
+
+    deadline = time.time() + timeout
+    try:
+        # 1. initialize
+        send({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "cartha-hermes-agent-heartbeat", "version": "0.2.0"},
+            },
+        })
+        init_resp = read_response(1, deadline)
+        if not init_resp or "error" in init_resp:
+            return (False, f"mcp initialize failed: {init_resp}")
+
+        # 2. notifications/initialized (no response expected)
+        send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+
+        # 3. tools/call
+        send({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments or {}},
+        })
+        call_resp = read_response(2, deadline)
+        if not call_resp:
+            return (False, f"mcp {tool_name} timed out after {timeout}s")
+        if "error" in call_resp:
+            err = call_resp["error"]
+            msg = err.get("message", str(err))
+            # Common auth-missing pattern: surface a friendly hint
+            if "token" in msg.lower() or "login" in msg.lower() or "unauthorized" in msg.lower() or "auth" in msg.lower():
+                return (False, f"ms365 not logged in — run: ~/.npm-global/bin/ms-365-mcp-server --login (orig: {msg})")
+            return (False, f"mcp {tool_name} error: {msg}")
+        result = call_resp.get("result", {})
+        if result.get("isError"):
+            # Tool ran but returned an error
+            content = result.get("content", [])
+            err_text = " ".join(c.get("text", "") for c in content if isinstance(c, dict))[:400]
+            if any(k in err_text.lower() for k in ("token", "login", "unauthorized", "401")):
+                return (False, f"ms365 not logged in — run: ~/.npm-global/bin/ms-365-mcp-server --login (orig: {err_text})")
+            return (False, f"mcp {tool_name} tool error: {err_text}")
+        # Concatenate text content blocks
+        content = result.get("content", [])
+        text_parts = []
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "text":
+                text_parts.append(c.get("text", ""))
+        return (True, "\n".join(text_parts)[:6000])
+    finally:
+        try:
+            if proc.stdin and not proc.stdin.closed:
+                proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
 
 
 def run_web_search(query: str, max_results: int = 5) -> tuple[bool, str]:
@@ -748,6 +865,37 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "read_calendar_today",
+            "description": "Read today's calendar events from Microsoft 365 (Outlook). Use for 'what's on my calendar', 'next meeting', 'when's my X meeting' questions. Calls the ms-365-mcp-server via stdio — read-only, uses cached MSAL credentials. Surfaces a compact summary bubble to Zack.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "purpose": {"type": "string", "description": "one-sentence reason — what Zack asked or what trigger prompted this"},
+                    "hours_ahead": {"type": "integer", "description": "how many hours from now to include (1-24, default 24)"},
+                },
+                "required": ["purpose"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_mail_recent",
+            "description": "Read recent Microsoft 365 (Outlook) inbox messages. Use for 'any urgent mail', 'did the X email come', 'inbox status' questions. Calls ms-365-mcp-server via stdio — read-only. Surfaces a compact summary bubble.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "purpose": {"type": "string", "description": "one-sentence reason"},
+                    "max_messages": {"type": "integer", "description": "1-20, default 10"},
+                    "unread_only": {"type": "boolean", "description": "true to filter to unread, default false"},
+                },
+                "required": ["purpose"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "escalate",
             "description": "Reach the senior model (deepseek-v4-flash, cloud) for a second opinion. Use SPARINGLY — only for: (a) multi-step planning that local tools cannot resolve, (b) genuinely novel patterns not seen recently, (c) destructive proposals needing concurrence, (d) anything you cannot answer with web_search / safe_shell_query / fetch_url / your training. Do NOT escalate for: 'no new signal' ticks, internal errors (Ollama down, snapshot missing), repeated identical observations already in the journal, or any question that maps to a local tool.",
             "parameters": {
@@ -821,6 +969,8 @@ Your job is to call EXACTLY ONE tool. Never reply in prose. Available tools:
   - web_search: query the local SearXNG instance (no API key, no rate limit). Use for any factual/current-events/version/weather lookup — never escalate these.
   - safe_shell_query: one read-only macOS diagnostic command (uptime, last, battery, disk, system_info, hardware_info, wifi, boot_time, loadavg, running_processes_count, uname, memory_pressure, date). Use for system-state questions a single command can answer.
   - fetch_url: pull HTML/JSON/XML/text content of a specific URL (capped at ~5KB).
+  - read_calendar_today: today's Microsoft 365 calendar events. Use for "what's on my calendar", "next meeting", "free at 3pm".
+  - read_mail_recent: recent Microsoft 365 inbox. Use for "any urgent mail", "did X email come".
 
   Surface to user:
   - notify_user: SOFT suggestion via a floating bubble that auto-dismisses (8s). Use after web_search / safe_shell_query when you have an answer Zack should see.
@@ -876,6 +1026,7 @@ Decision rules:
    (b) Is the answer on the public web (news, current versions, weather, lookups)? → call `web_search`. Do not escalate.
    (c) Is the answer in a macOS shell command (uptime, battery, last reboot, disk, wifi, etc.)? → call `safe_shell_query`. Do not escalate.
    (d) Is the answer at a specific URL? → call `fetch_url`. Do not escalate.
+   (d2) Is it about Zack's calendar or inbox? → call `read_calendar_today` or `read_mail_recent`. Do not escalate.
    (e) Is this a destructive proposal (quit app, cleanup)? → call the propose_* tool; Phase 2 handles the second opinion automatically.
    (f) Is the situation a no-op tick (no new signal, system nominal, no open user threads)? → `noop`. Never escalate.
    (g) Is this a recurring observation already in the last 10 journal entries with similar wording? → `noop` or `journal_entry` once at most. Never re-escalate.
@@ -1105,6 +1256,10 @@ def infer_tool_from_content(content: str) -> tuple[str, dict] | None:
         return ("safe_shell_query", obj)
     if {"url", "purpose"} <= keys:
         return ("fetch_url", obj)
+    if {"purpose", "hours_ahead"} <= keys:
+        return ("read_calendar_today", obj)
+    if {"purpose", "max_messages"} <= keys or {"purpose", "unread_only"} <= keys:
+        return ("read_mail_recent", obj)
     if {"app_name", "reason"} <= keys:
         return ("propose_quit_app", obj)
     if {"action", "reason"} <= keys:
@@ -1573,6 +1728,64 @@ def main() -> int:
                 title=f"URL: {purpose[:60]}",
                 message=body[:380],
                 severity="info",
+                persistent=False,
+                reply_id=rid,
+                replace_key=("cartha-agent-voice" if has_voice_user_task(replies) else ""),
+            )
+            journal_append(f"  ↳ surfaced to user via bubble (id={rid})")
+        return 0
+
+    if name == "read_calendar_today":
+        purpose = (args.get("purpose") or "(no purpose)").strip()
+        hours_ahead = max(1, min(int(args.get("hours_ahead") or 24), 24))
+        # Build the ISO datetime window for "now to N hours from now"
+        from datetime import timezone, timedelta
+        now_utc = datetime.now(timezone.utc)
+        start_iso = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_iso = (now_utc + timedelta(hours=hours_ahead)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ok, body = call_ms365_mcp(
+            "get-calendar-view",
+            {"startDateTime": start_iso, "endDateTime": end_iso, "$top": 25, "$orderby": "start/dateTime"},
+        )
+        tag = "CALENDAR" if ok else "CALENDAR-FAILED"
+        journal_append(f"- {ts()} — [{tag}] {purpose} (window={hours_ahead}h)")
+        for line in body.split("\n")[:25]:
+            if line.strip():
+                journal_append(f"  ↳ {line[:300]}")
+        if has_direct_user_task(replies):
+            rid = f"cal-{uuid.uuid4().hex[:8]}"
+            preview = body[:380] if ok else f"Calendar lookup failed: {body[:240]}"
+            notify_macos(
+                title=f"Calendar: {purpose[:60]}",
+                message=preview,
+                severity="info" if ok else "warning",
+                persistent=False,
+                reply_id=rid,
+                replace_key=("cartha-agent-voice" if has_voice_user_task(replies) else ""),
+            )
+            journal_append(f"  ↳ surfaced to user via bubble (id={rid})")
+        return 0
+
+    if name == "read_mail_recent":
+        purpose = (args.get("purpose") or "(no purpose)").strip()
+        max_messages = max(1, min(int(args.get("max_messages") or 10), 20))
+        unread_only = bool(args.get("unread_only"))
+        mcp_args: dict = {"$top": max_messages, "$orderby": "receivedDateTime DESC"}
+        if unread_only:
+            mcp_args["$filter"] = "isRead eq false"
+        ok, body = call_ms365_mcp("list-mail-messages", mcp_args)
+        tag = "MAIL" if ok else "MAIL-FAILED"
+        journal_append(f"- {ts()} — [{tag}] {purpose} (max={max_messages}, unread_only={unread_only})")
+        for line in body.split("\n")[:25]:
+            if line.strip():
+                journal_append(f"  ↳ {line[:300]}")
+        if has_direct_user_task(replies):
+            rid = f"mail-{uuid.uuid4().hex[:8]}"
+            preview = body[:380] if ok else f"Mail lookup failed: {body[:240]}"
+            notify_macos(
+                title=f"Mail: {purpose[:60]}",
+                message=preview,
+                severity="info" if ok else "warning",
                 persistent=False,
                 reply_id=rid,
                 replace_key=("cartha-agent-voice" if has_voice_user_task(replies) else ""),
