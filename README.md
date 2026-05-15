@@ -1,14 +1,16 @@
-# Hermes Local Agent Kit
+# Cartha Hermes Agent Assistant
 
-A batteries-included, open-source local Hermes Agent stack for macOS:
+A batteries-included local AI assistant stack for macOS, built on the open-source Hermes Agent:
 
 - **Hermes Agent gateway** on `127.0.0.1:8642` for OpenAI-compatible agent/tool calls.
 - **Native Hermes dashboard** on `127.0.0.1:9119` for config, providers, sessions, skills, and diagnostics.
 - **Hermes Workspace** on `127.0.0.1:3000` for the richer chat/workspace UI.
 - **Small local operator console** on `127.0.0.1:5128` for quick status checks, image tests, and smoke-testing the agent path.
+- **Autonomous heartbeat custodian** that runs every 30 min — system observability, idle-app cleanup proposals, factual web search, and pending-task triage. Local-first; only escalates to the cloud "senior" model for genuine multi-step reasoning.
+- **Self-hosted SearXNG** web search backend on `127.0.0.1:8888` so the heartbeat can answer factual questions without OpenRouter calls.
 - **launchd service templates** so the stack survives terminal closes and reboots.
 
-This repo packages the glue that made the local Hermes setup reliable: token propagation, launchd process ownership, OpenRouter model defaults, simple smoke tests, and an optional lightweight UI.
+This repo packages the glue that made the local Hermes setup reliable: token propagation, launchd process ownership, OpenRouter model defaults, simple smoke tests, the heartbeat custodian, the SearXNG search backend, and an optional lightweight UI.
 
 ## Default model routing
 
@@ -29,6 +31,9 @@ git clone https://github.com/zackseyun/hermes-local-agent-kit.git
 cd hermes-local-agent-kit
 npm install
 node scripts/install.mjs
+
+# (optional) stand up the SearXNG web-search backend for the heartbeat
+npm run searxng:start
 ```
 
 Then add your OpenRouter key:
@@ -118,6 +123,41 @@ npm run reset:openrouter
 # Run local console manually
 npm start
 ```
+
+## Heartbeat custodian (Phase 2 — local-first agentic loop)
+
+The kit ships a 30-minute autonomous heartbeat that lives in `templates/heartbeat/`:
+
+- `heartbeat.sh` — collects recent activity, OpenClaw context, pending agent-sync jobs, and a system snapshot, then pipes the bundle into `heartbeat-agent.py`.
+- `heartbeat-agent.py` — local model (default: `qwen3.6:35b-hermes-256k` on Ollama) picks exactly one tool. Tools include `noop`, `journal_entry`, `notify_user`, `show_visual`, `notify_user_dialog`, `set_timer`, `mark_job_done`, `web_search`, `safe_shell_query`, `fetch_url`, `escalate`, `propose_quit_app`, `propose_cleanup`.
+- `heartbeat-cleanup.sh` — gated cleanup executor (empty trash, Xcode DerivedData, iOS simulator caches, etc.).
+- `heartbeat-config/policy.json` — phase + allowlist + denylist + cleanup actions + `trusted_autonomy` block for direct edit/test/build/git tasks in allowed roots.
+
+Phase 2 means destructive actions (quit app, cleanup) require concurrence from a cloud "senior" model (default `deepseek/deepseek-v4-flash` via OpenRouter). The heartbeat is **engineered to avoid over-escalation** — the system prompt walks an explicit decision tree that prefers local tools (web search, shell query, URL fetch) before reaching for the cloud, and a pre-deepseek content-fingerprint dedup skips identical-situation escalations.
+
+Install:
+
+```bash
+cp templates/heartbeat/*.sh templates/heartbeat/*.py ~/.hermes/scripts/
+mkdir -p ~/.hermes/heartbeat-config
+cp templates/heartbeat-config/policy.json ~/.hermes/heartbeat-config/
+chmod +x ~/.hermes/scripts/heartbeat*.sh ~/.hermes/scripts/heartbeat-agent.py
+# Schedule via launchd or cron — see policy.json _comment for phase semantics.
+```
+
+## SearXNG web search backend
+
+The heartbeat's `web_search` tool calls a localhost SearXNG instance — no API key, no rate limit, no cloud calls for factual questions. Settings template + bootstrap script live in `templates/searxng/`:
+
+```bash
+# Requires Docker (Colima, Docker Desktop, or Orbstack) running.
+npm run searxng:start
+# Bound to 127.0.0.1:8888, restarts unless explicitly stopped.
+
+curl 'http://127.0.0.1:8888/search?q=test&format=json' | jq '.results | .[0]'
+```
+
+The script seeds `~/.hermes/searxng/settings.yml` from `templates/searxng/settings.yml` on first run with a freshly-generated secret key. Re-runs are idempotent (restart existing container).
 
 ## Stand-up guide
 
