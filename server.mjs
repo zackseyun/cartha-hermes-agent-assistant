@@ -23,6 +23,7 @@ const HOME = process.env.HOME || "";
 const TESTFLIGHT_PROPOSALS_PATH =
   process.env.CARTHA_TESTFLIGHT_PROPOSALS_PATH || path.join(HOME, ".hermes", "cartha-testflight-proposals.json");
 const CARTHA_GITHUB_REPO = process.env.CARTHA_GITHUB_REPO || "zackseyun/cartha.ai.mobile";
+const IOS_TESTFLIGHT_SH = process.env.CARTHA_IOS_TESTFLIGHT_SH || path.join(HOME, ".hermes", "scripts", "cartha-ios-testflight.sh");
 
 const CONTENT_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -218,23 +219,48 @@ async function handleTestFlightAction(req, res, id, action) {
   const channelLabel = proposal.channel_label || "Apple upload";
   const reason = String(body.reason || `Cartha Agent approved ${channelLabel} for ${proposal.short_sha}: ${proposal.reason || proposal.subject}`).slice(0, 250);
   try {
-    const { stdout, stderr } = await run(
-      "gh",
-      [
-        "workflow",
-        "run",
-        workflow,
-        "--repo",
-        CARTHA_GITHUB_REPO,
-        "--ref",
-        "main",
-        "-f",
-        `sha=${proposal.sha}`,
-        "-f",
-        `reason=${reason}`,
-      ],
-      { timeout: 30_000, maxBuffer: 1024 * 1024 },
-    );
+    let stdout = "";
+    let stderr = "";
+    if ((proposal.channel || "ios_testflight") === "ios_testflight") {
+      const result = await run(IOS_TESTFLIGHT_SH, ["approve", proposal.id, reason], { timeout: 120_000, maxBuffer: 2 * 1024 * 1024 });
+      stdout = result.stdout || "";
+      stderr = result.stderr || "";
+    } else {
+      const result = await run(
+        "gh",
+        [
+          "workflow",
+          "run",
+          workflow,
+          "--repo",
+          CARTHA_GITHUB_REPO,
+          "--ref",
+          "main",
+          "-f",
+          `sha=${proposal.sha}`,
+          "-f",
+          `reason=${reason}`,
+        ],
+        { timeout: 30_000, maxBuffer: 1024 * 1024 },
+      );
+      stdout = result.stdout || "";
+      stderr = result.stderr || "";
+    }
+    const refreshed = await readJsonFile(TESTFLIGHT_PROPOSALS_PATH, []);
+    const refreshedIndex = Array.isArray(refreshed) ? refreshed.findIndex((item) => item?.id === id) : -1;
+    if (refreshedIndex >= 0) {
+      refreshed[refreshedIndex] = {
+        ...refreshed[refreshedIndex],
+        status: "deploy_requested",
+        approved_at: refreshed[refreshedIndex].approved_at || now,
+        deploy_requested_at: refreshed[refreshedIndex].deploy_requested_at || now,
+        deploy_stdout: refreshed[refreshedIndex].deploy_stdout || `${stdout || ""}${stderr || ""}`.trim(),
+        deploy_error: "",
+        updated_at: new Date().toISOString(),
+      };
+      await writeJsonFile(TESTFLIGHT_PROPOSALS_PATH, refreshed);
+      return sendJson(res, 200, { ok: true, proposal: publicProposal(refreshed[refreshedIndex]) });
+    }
     proposals[index] = {
       ...proposal,
       status: "deploy_requested",

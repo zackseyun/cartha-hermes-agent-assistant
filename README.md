@@ -55,15 +55,15 @@ lanes. By default the local commit hook asks only about **iOS TestFlight**
 `--channel macos_appstore` when Mac App Store proposals are wanted too.
 
 1. Local Git hooks in `cartha.ai.mobile` run
-   `scripts/testflight_proposal_watcher.mjs --commit <sha> --pending` after
-   commits, merges, rewrites, and main pushes.
-2. Cartha Agent recommends **yes**, **hold**, or **no**, but every local commit
-   remains pending until Zack chooses.
-3. A Cartha Agent bubble asks with **Deploy iOS**, **Skip**, and **Later** chips.
-   It does **not** auto-focus, so it disappears if ignored. Pending proposals
-   also stay in the console left rail.
-4. **Deploy iOS** dispatches `deploy-ios.yml` with the exact commit SHA.
-   **No, skip** records the skip without spending an Apple upload slot.
+   `scripts/testflight_proposal_watcher.mjs --commit <sha>` after commits,
+   merges, rewrites, and main pushes.
+2. Every commit gets a tiny top-right Cartha Agent bubble with **Deploy iOS**
+   and **Skip** chips. It does not auto-focus and disappears if ignored.
+3. If Zack ignores it, Cartha Agent waits a random 10-20 minutes. If no newer
+   commit appears and the Mac has been AFK for at least 10 minutes, it
+   dispatches `deploy-ios.yml` for that exact SHA automatically.
+4. The daily cap is 6 iOS TestFlight uploads total. After the cap is hit,
+   Cartha Agent stops dispatching uploads for the day.
 
 Install or repair the hooks:
 
@@ -75,9 +75,13 @@ Useful env overrides:
 
 ```bash
 CARTHA_MOBILE_REPO="/path/to/cartha.ai.mobile"
-CARTHA_TESTFLIGHT_USE_HERMES=0 # force heuristic-only proposals
-CARTHA_TESTFLIGHT_CHANNEL=all    # opt back into iOS + Mac proposal prompts
-CARTHA_TESTFLIGHT_BUBBLE=0       # disable Cartha Agent bubble prompt
+CARTHA_TESTFLIGHT_USE_HERMES=0       # force heuristic-only proposals
+CARTHA_TESTFLIGHT_CHANNEL=all        # opt back into iOS + Mac proposal prompts
+CARTHA_TESTFLIGHT_BUBBLE=0           # disable the tiny Cartha Agent bubble
+CARTHA_TESTFLIGHT_MAX_DAILY_UPLOADS=6
+CARTHA_TESTFLIGHT_QUIET_MIN_SECONDS=600
+CARTHA_TESTFLIGHT_QUIET_MAX_SECONDS=1200
+CARTHA_TESTFLIGHT_AFK_SECONDS=600
 CARTHA_TESTFLIGHT_HERMES_MODEL="deepseek/deepseek-v4-flash"
 ```
 

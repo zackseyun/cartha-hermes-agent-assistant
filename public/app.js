@@ -86,9 +86,12 @@ function formatDateTime(value) {
 
 function statusLabel(status) {
   if (status === "pending") return "Needs decision";
+  if (status === "auto_waiting") return "Will auto-deploy";
   if (status === "deploy_requested") return "Deploy requested";
   if (status === "skipped") return "Skipped";
   if (status === "auto_skipped") return "Auto-skipped";
+  if (status === "auto_superseded") return "Superseded";
+  if (status === "auto_cap_reached") return "Daily cap hit";
   if (status === "approval_failed") return "Approval failed";
   return status || "Unknown";
 }
@@ -113,7 +116,7 @@ async function actOnTestFlightProposal(id, action) {
 function renderTestFlightProposals(proposals) {
   testFlightList.innerHTML = "";
   const pending = proposals.filter((proposal) => proposal.status === "pending");
-  const recent = proposals.filter((proposal) => proposal.status !== "pending").slice(0, 4);
+  const recent = proposals.filter((proposal) => proposal.status !== "pending").slice(0, 6);
   const visible = pending.concat(recent);
 
   if (!visible.length) {
