@@ -25,6 +25,7 @@ const attachmentPreview = document.querySelector("#attachment-preview");
 let conversation = [];
 let activeController = null;
 let activeModalProposal = null;
+let activeModalTimer = null;
 const deferredModalIds = new Set();
 
 function selectedBackend() {
@@ -116,7 +117,7 @@ function renderTestFlightProposals(proposals) {
   const visible = pending.concat(recent);
 
   if (!visible.length) {
-    testFlightList.textContent = "No Apple upload proposals yet. Hermes will add one after the next mobile commit or main push.";
+    testFlightList.textContent = "No Apple upload proposals yet. Cartha Agent will add one after the next mobile commit or main push.";
     return;
   }
 
@@ -196,15 +197,24 @@ function renderTestFlightProposals(proposals) {
 function showTestFlightModal(proposal) {
   if (!testFlightModal) return;
   activeModalProposal = proposal;
-  testFlightModalSubtitle.textContent = `${proposal.channel_label || "Apple upload"} · ${proposal.short_sha || ""} · ${proposal.subject || "Untitled commit"} · Hermes says ${proposal.recommendation || "hold"}`;
-  testFlightModalReason.textContent = proposal.reason || "Hermes left this for your decision.";
+  testFlightModalSubtitle.textContent = `${proposal.channel_label || "Apple upload"} · ${proposal.short_sha || ""} · ${proposal.subject || "Untitled commit"} · Cartha Agent says ${proposal.recommendation || "hold"}`;
+  testFlightModalReason.textContent = proposal.reason || "Cartha Agent left this for your decision.";
   const files = Array.isArray(proposal.changed_files) ? proposal.changed_files.slice(0, 6) : [];
   testFlightModalFiles.textContent = files.length ? `Changed: ${files.join(", ")}${proposal.changed_files.length > files.length ? "…" : ""}` : "";
   testFlightModal.classList.remove("hidden");
+  if (activeModalTimer) clearTimeout(activeModalTimer);
+  activeModalTimer = setTimeout(() => {
+    if (activeModalProposal?.id === proposal.id) {
+      deferredModalIds.add(proposal.id);
+      hideTestFlightModal();
+    }
+  }, 30000);
 }
 
 function hideTestFlightModal() {
   activeModalProposal = null;
+  if (activeModalTimer) clearTimeout(activeModalTimer);
+  activeModalTimer = null;
   testFlightModal?.classList.add("hidden");
 }
 

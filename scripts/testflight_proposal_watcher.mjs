@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -18,7 +18,7 @@ const COMMIT_SHA = COMMIT_ARG_INDEX >= 0 ? process.argv[COMMIT_ARG_INDEX + 1] : 
 const FORCE_PENDING = process.argv.includes("--pending");
 const RENOTIFY = process.argv.includes("--renotify");
 const CHANNEL_ARG_INDEX = process.argv.indexOf("--channel");
-const CHANNEL_ARG = CHANNEL_ARG_INDEX >= 0 ? process.argv[CHANNEL_ARG_INDEX + 1] : "all";
+const CHANNEL_ARG = CHANNEL_ARG_INDEX >= 0 ? process.argv[CHANNEL_ARG_INDEX + 1] : (process.env.CARTHA_TESTFLIGHT_CHANNEL || "ios_testflight");
 const CHANNELS = {
   ios_testflight: {
     idPrefix: "ios-tf",
@@ -34,6 +34,9 @@ const CHANNELS = {
   },
 };
 const SELECTED_CHANNELS = CHANNEL_ARG === "all" ? Object.keys(CHANNELS) : [CHANNEL_ARG].filter((key) => CHANNELS[key]);
+const BUBBLE_ENABLED = process.env.CARTHA_TESTFLIGHT_BUBBLE !== "0";
+const BUBBLE_BIN = process.env.CARTHA_AGENT_BUBBLE || path.join(HOME, ".hermes", "scripts", "hermes-bubble", "hermes-bubble");
+const REPLIES_PATH = process.env.CARTHA_AGENT_REPLIES_PATH || path.join(HOME, ".hermes", "heartbeat-replies.jsonl");
 
 async function ensureParent(filePath) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -149,7 +152,7 @@ function heuristicDecision({ subject, files, body }, channel = CHANNELS.ios_test
 
 async function hermesDecision(input, channel = CHANNELS.ios_testflight) {
   if (!USE_HERMES) return null;
-  const prompt = `You are Hermes, acting as Cartha's Apple release steward. Decide whether this exact commit should spend one scarce ${channel.recommendationPrompt} slot. Return ONLY strict JSON with keys: recommendation (yes|hold|no), confidence (0..1), reason (one concise sentence). Prefer hold/no unless the commit is release-critical, user-facing enough to require physical-device or App Store validation, or explicitly asks for this upload lane.\n\nUpload lane: ${channel.label}\nWorkflow: ${channel.workflow}\nCommit: ${input.sha}\nSubject: ${input.subject}\nAuthor: ${input.author}\nFiles:\n${input.files.map((f) => `- ${f}`).join("\n")}\n\nDiff/stat/context:\n${input.body.slice(0, 8000)}`;
+  const prompt = `You are the Cartha Agent, acting as Cartha's Apple release steward. Decide whether this exact commit should spend one scarce ${channel.recommendationPrompt} slot. Return ONLY strict JSON with keys: recommendation (yes|hold|no), confidence (0..1), reason (one concise sentence). Prefer hold/no unless the commit is release-critical, user-facing enough to require physical-device or App Store validation, or explicitly asks for this upload lane.\n\nUpload lane: ${channel.label}\nWorkflow: ${channel.workflow}\nCommit: ${input.sha}\nSubject: ${input.subject}\nAuthor: ${input.author}\nFiles:\n${input.files.map((f) => `- ${f}`).join("\n")}\n\nDiff/stat/context:\n${input.body.slice(0, 8000)}`;
   try {
     const { stdout } = await run("hermes", ["--oneshot", prompt, "--provider", process.env.CARTHA_TESTFLIGHT_HERMES_PROVIDER || "openrouter", "--model", process.env.CARTHA_TESTFLIGHT_HERMES_MODEL || "deepseek/deepseek-v4-flash"], {
       cwd: MOBILE_REPO,
@@ -162,7 +165,7 @@ async function hermesDecision(input, channel = CHANNELS.ios_testflight) {
     return {
       recommendation: parsed.recommendation,
       confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0.5)),
-      reason: String(parsed.reason || "Hermes returned a recommendation.").slice(0, 280),
+      reason: String(parsed.reason || "Cartha Agent returned a recommendation.").slice(0, 280),
       source: "hermes",
     };
   } catch {
@@ -170,9 +173,43 @@ async function hermesDecision(input, channel = CHANNELS.ios_testflight) {
   }
 }
 
+function notifyBubble(proposal) {
+  if (!BUBBLE_ENABLED) return;
+  const channel = proposal.channel || "ios_testflight";
+  const isIos = channel === "ios_testflight";
+  const title = isIos ? "iOS TestFlight upload?" : `${proposal.channel_label || "Apple upload"}?`;
+  const rec = String(proposal.recommendation || "hold").toUpperCase();
+  const severity = proposal.recommendation === "yes" ? "warning" : "notable";
+  const actions = isIos ? ["Deploy iOS", "Skip", "Later"] : ["Deploy Mac", "Skip", "Later"];
+  const message = [
+    `Cartha Agent says ${rec} for ${proposal.short_sha}: ${proposal.subject}`,
+    proposal.reason,
+    "Ignore this and it will disappear; the proposal stays in the local console for later.",
+  ].filter(Boolean).join("\n");
+  try {
+    const child = spawn(BUBBLE_BIN, [
+      "--title", title,
+      "--message", message.slice(0, 1200),
+      "--severity", severity,
+      "--duration", proposal.recommendation === "yes" ? "24" : "18",
+      "--allow-reply",
+      "--no-auto-focus",
+      "--reply-id", proposal.id,
+      "--reply-out", REPLIES_PATH,
+      "--actions", actions.join("\x1f"),
+      "--replace-key", "cartha-testflight-proposal",
+      ...(proposal.recommendation === "yes" ? ["--sound", "Tink"] : []),
+    ], { detached: true, stdio: "ignore" });
+    child.unref();
+  } catch {
+    // Bubble support is best-effort; terminal-notifier + console remain available.
+  }
+}
+
 async function notify(proposal) {
+  notifyBubble(proposal);
   const notifier = process.env.CARTHA_TESTFLIGHT_NOTIFIER || "terminal-notifier";
-  const title = proposal.recommendation === "yes" ? `Hermes recommends ${proposal.channel_label}` : `Hermes wants your ${proposal.channel_label} call`;
+  const title = proposal.recommendation === "yes" ? `Cartha Agent recommends ${proposal.channel_label}` : `Cartha Agent wants your ${proposal.channel_label} call`;
   const subtitle = `${proposal.short_sha} · ${proposal.subject.slice(0, 60)}`;
   const message = `${proposal.reason} Tap to approve or skip.`;
   try {
@@ -185,7 +222,7 @@ async function notify(proposal) {
       "-sound", proposal.recommendation === "yes" ? "default" : "Pop",
     ], { timeout: 5_000 });
   } catch {
-    // Notification support is best-effort; the Hermes UI still shows the proposal.
+    // Notification support is best-effort; the Cartha Agent console still shows the proposal.
   }
 }
 
@@ -246,11 +283,11 @@ async function createProposalForSha(sha, channelKey = "ios_testflight", { update
   const shouldNotify = proposal.status === "pending" && (!existing || existing.status !== "pending" || RENOTIFY);
   if (shouldNotify) {
     await notify(proposal);
-    console.log(`Hermes ${channel.label} proposal: ${proposal.recommendation.toUpperCase()} ${proposal.short_sha} — ${proposal.reason}`);
+    console.log(`Cartha Agent ${channel.label} proposal: ${proposal.recommendation.toUpperCase()} ${proposal.short_sha} — ${proposal.reason}`);
   } else if (proposal.status === "pending") {
-    console.log(`Hermes ${channel.label} proposal already pending for ${proposal.short_sha}.`);
+    console.log(`Cartha Agent ${channel.label} proposal already pending for ${proposal.short_sha}.`);
   } else {
-    console.log(`Hermes kept ${channel.label} proposal ${proposal.status} for ${proposal.short_sha}: ${proposal.reason}`);
+    console.log(`Cartha Agent kept ${channel.label} proposal ${proposal.status} for ${proposal.short_sha}: ${proposal.reason}`);
   }
 }
 

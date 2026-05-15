@@ -50,17 +50,19 @@ npm run smoke
 ## Apple upload approval gate
 
 The console can now act as the local approval modal for scarce Apple upload
-lanes, currently **iOS TestFlight** and **Mac App Store**:
+lanes. By default the local commit hook asks only about **iOS TestFlight**
+(to avoid duplicate Apple prompts); run the watcher with `--channel all` or
+`--channel macos_appstore` when Mac App Store proposals are wanted too.
 
 1. Local Git hooks in `cartha.ai.mobile` run
    `scripts/testflight_proposal_watcher.mjs --commit <sha> --pending` after
    commits, merges, rewrites, and main pushes.
-2. Hermes recommends **yes**, **hold**, or **no**, but every local commit remains
-   pending until Zack chooses.
-3. The console shows a Hermes-style modal with **Yes, upload**, **No, skip**,
-   and **Later** chips. Pending proposals also stay in the left rail.
-4. **Yes, upload** dispatches the proposal's workflow (`deploy-ios.yml` or
-   `deploy-macos.yml`) with the exact commit SHA.
+2. Cartha Agent recommends **yes**, **hold**, or **no**, but every local commit
+   remains pending until Zack chooses.
+3. A Cartha Agent bubble asks with **Deploy iOS**, **Skip**, and **Later** chips.
+   It does **not** auto-focus, so it disappears if ignored. Pending proposals
+   also stay in the console left rail.
+4. **Deploy iOS** dispatches `deploy-ios.yml` with the exact commit SHA.
    **No, skip** records the skip without spending an Apple upload slot.
 
 Install or repair the hooks:
@@ -74,6 +76,8 @@ Useful env overrides:
 ```bash
 CARTHA_MOBILE_REPO="/path/to/cartha.ai.mobile"
 CARTHA_TESTFLIGHT_USE_HERMES=0 # force heuristic-only proposals
+CARTHA_TESTFLIGHT_CHANNEL=all    # opt back into iOS + Mac proposal prompts
+CARTHA_TESTFLIGHT_BUBBLE=0       # disable Cartha Agent bubble prompt
 CARTHA_TESTFLIGHT_HERMES_MODEL="deepseek/deepseek-v4-flash"
 ```
 

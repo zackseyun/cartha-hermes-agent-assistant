@@ -216,7 +216,7 @@ async function handleTestFlightAction(req, res, id, action) {
   }
 
   const channelLabel = proposal.channel_label || "Apple upload";
-  const reason = String(body.reason || `Hermes approved ${channelLabel} for ${proposal.short_sha}: ${proposal.reason || proposal.subject}`).slice(0, 250);
+  const reason = String(body.reason || `Cartha Agent approved ${channelLabel} for ${proposal.short_sha}: ${proposal.reason || proposal.subject}`).slice(0, 250);
   try {
     const { stdout, stderr } = await run(
       "gh",
