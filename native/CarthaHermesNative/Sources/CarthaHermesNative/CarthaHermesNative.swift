@@ -36,6 +36,28 @@ struct ProposalResponse: Decodable {
     let proposals: [UploadProposal]
 }
 
+struct SessionResponse: Decodable {
+    let ok: Bool?
+    let sessionsDir: String?
+    let sessionCount: Int?
+    let activeSessionCount: Int?
+    let sessions: [HermesSession]
+}
+
+struct HermesSession: Identifiable, Decodable {
+    let id: String
+    let file: String?
+    let path: String?
+    let kind: String?
+    let model: String?
+    let platform: String?
+    let title: String?
+    let last_user: String?
+    let last_assistant: String?
+    let message_count: Int?
+    let updated_at: String?
+}
+
 struct UploadProposal: Identifiable, Decodable {
     let id: String
     let short_sha: String?
@@ -76,6 +98,9 @@ final class HermesService: ObservableObject {
     @Published var status: HermesStatus?
     @Published var wake: WakeStatus?
     @Published var proposals: [UploadProposal] = []
+    @Published var sessions: [HermesSession] = []
+    @Published var sessionCount = 0
+    @Published var activeSessionCount = 0
     @Published var messages: [ChatMessage] = [
         ChatMessage(role: "system", content: "Cartha Hermes native shell is ready. This window talks to the local Hermes stack and keeps the Swift bubble as the primary surface.")
     ]
@@ -109,7 +134,8 @@ final class HermesService: ObservableObject {
         async let a: Void = refreshStatus()
         async let b: Void = refreshWake()
         async let c: Void = refreshProposals()
-        _ = await (a, b, c)
+        async let d: Void = refreshSessions()
+        _ = await (a, b, c, d)
     }
 
     func refreshStatus() async {
@@ -137,6 +163,18 @@ final class HermesService: ObservableObject {
             lastError = nil
         } catch {
             lastError = "Approvals: \(error.localizedDescription)"
+        }
+    }
+
+    func refreshSessions() async {
+        do {
+            let response = try await getJSON(SessionResponse.self, path: "/api/sessions")
+            sessions = response.sessions
+            sessionCount = response.sessionCount ?? response.sessions.count
+            activeSessionCount = response.activeSessionCount ?? 0
+            lastError = nil
+        } catch {
+            lastError = "Sessions: \(error.localizedDescription)"
         }
     }
 
@@ -458,6 +496,78 @@ struct WakeView: View {
     }
 }
 
+struct SessionsView: View {
+    @ObservedObject var service: HermesService
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading) {
+                    Text("Hermes sessions")
+                        .font(.title3.bold())
+                    Text("\(service.sessionCount) total · \(service.activeSessionCount) active")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Refresh") { Task { await service.refreshSessions() } }
+            }
+            List(service.sessions) { session in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(session.title ?? session.id)
+                            .font(.headline)
+                            .lineLimit(1)
+                        Spacer()
+                        Text(session.kind ?? "session")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(.white.opacity(0.08), in: Capsule())
+                    }
+                    HStack(spacing: 10) {
+                        Text(session.model ?? "unknown model")
+                        Text(session.platform ?? "local")
+                        Text("\(session.message_count ?? 0) messages")
+                    }
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    if let last = session.last_assistant, !last.isEmpty {
+                        Text(last)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    } else if let last = session.last_user, !last.isEmpty {
+                        Text(last)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    HStack {
+                        Button("Open JSON") {
+                            if let path = session.path {
+                                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                            }
+                        }
+                        .disabled(session.path == nil)
+                        Button("Open web session") {
+                            if let file = session.file {
+                                var components = URLComponents(url: service.baseURL, resolvingAgainstBaseURL: false)
+                                components?.queryItems = [URLQueryItem(name: "session", value: file)]
+                                components?.fragment = "canvas"
+                                if let url = components?.url { NSWorkspace.shared.open(url) }
+                            }
+                        }
+                        .disabled(session.file == nil)
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+        }
+        .padding()
+    }
+}
+
 struct ApprovalsView: View {
     @ObservedObject var service: HermesService
 
@@ -540,6 +650,8 @@ struct MainPanelView: View {
                 .tabItem { Label("Workspace", systemImage: "rectangle.3.group") }
             ApprovalsView(service: service)
                 .tabItem { Label("Approvals", systemImage: "checkmark.seal") }
+            SessionsView(service: service)
+                .tabItem { Label("Sessions", systemImage: "clock.arrow.circlepath") }
             WakeView(service: service)
                 .tabItem { Label("Wake", systemImage: "waveform") }
         }
