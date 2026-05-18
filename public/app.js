@@ -35,6 +35,9 @@ let activeModalProposal = null;
 let activeModalTimer = null;
 let canvasSessions = [];
 const deferredModalIds = new Set();
+const uploadModalParams = new URLSearchParams(window.location.search);
+const shouldAutoOpenUploadModal =
+  uploadModalParams.get("testflight") === "1" || uploadModalParams.get("uploadModal") === "1";
 
 function selectedBackend() {
   return document.querySelector('input[name="backend"]:checked')?.value || "hermes";
@@ -195,6 +198,11 @@ function renderTestFlightProposals(proposals) {
     }
 
     testFlightList.appendChild(item);
+  }
+
+  if (!shouldAutoOpenUploadModal) {
+    hideTestFlightModal();
+    return;
   }
 
   const pendingForModal = pending.find((proposal) => !deferredModalIds.has(proposal.id));
