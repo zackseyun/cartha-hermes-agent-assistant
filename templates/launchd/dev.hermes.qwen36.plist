@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.hermes.qwen36</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__LLAMA_SERVER_BIN__</string>
+    <string>-m</string>
+    <string>__QWEN36_MODEL_PATH__</string>
+    <string>--alias</string>
+    <string>qwen3.6:35b-hermes-256k</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>11435</string>
+    <string>-c</string>
+    <string>__QWEN36_CONTEXT__</string>
+    <string>-n</string>
+    <string>512</string>
+    <string>-np</string>
+    <string>1</string>
+    <string>--cache-ram</string>
+    <string>0</string>
+    <string>--reasoning</string>
+    <string>off</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__HERMES_HOME__/logs/qwen36-llama-server.log</string>
+  <key>StandardErrorPath</key><string>__HERMES_HOME__/logs/qwen36-llama-server.err.log</string>
+</dict>
+</plist>

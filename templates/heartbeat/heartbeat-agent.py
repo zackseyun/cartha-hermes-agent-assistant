@@ -80,7 +80,9 @@ AFK_THRESHOLD_SECS = int(os.environ.get("HEARTBEAT_AFK_THRESHOLD", "300"))  # 5 
 IMSG_TARGET = os.environ.get("HEARTBEAT_IMSG_TARGET", "")  # phone (+1...) or email handle; empty = skip
 
 MODEL = os.environ.get("HEARTBEAT_MODEL", "qwen3.6:35b-hermes-256k")
-OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
+LOCAL_BACKEND = os.environ.get("HEARTBEAT_LOCAL_BACKEND", "openai").lower()
+LOCAL_API_BASE = os.environ.get("HEARTBEAT_LOCAL_API_BASE", "http://127.0.0.1:11435/v1").rstrip("/")
+OLLAMA_URL = os.environ.get("HEARTBEAT_OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
 KEEP_ALIVE = os.environ.get("HEARTBEAT_KEEP_ALIVE", "15m")
 PHASE_OVERRIDE = os.environ.get("HEARTBEAT_PHASE")  # "1", "2", or "3"
 
@@ -1074,6 +1076,36 @@ Always exactly one tool call. No prose."""
 # ---------- ollama + openrouter calls ----------
 
 def call_local(user_content: str) -> dict:
+    if LOCAL_BACKEND == "ollama":
+        return call_local_ollama(user_content)
+    return call_local_openai(user_content)
+
+
+def call_local_openai(user_content: str) -> dict:
+    body = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        "tools": TOOLS,
+        "stream": False,
+        "temperature": 0.0,
+        "max_tokens": 512,
+    }
+    req = urllib.request.Request(
+        f"{LOCAL_API_BASE}/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=180) as r:
+        data = json.loads(r.read())
+    choices = data.get("choices") or []
+    msg = (choices[0].get("message") if choices else {}) or {}
+    return {"message": msg, "raw": data}
+
+
+def call_local_ollama(user_content: str) -> dict:
     body = {
         "model": MODEL,
         "messages": [
@@ -1508,8 +1540,8 @@ def main() -> int:
     try:
         resp = call_local(user_content)
     except Exception as e:
-        print(f"ollama call failed: {e}", file=sys.stderr)
-        journal_append(f"- {ts()} — heartbeat ERROR: ollama unreachable ({e})")
+        print(f"local model call failed: {e}", file=sys.stderr)
+        journal_append(f"- {ts()} — heartbeat ERROR: local model unreachable ({e})")
         return 1
     dt = time.time() - t0
 
