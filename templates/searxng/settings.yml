@@ -1,0 +1,29 @@
+use_default_settings: true
+
+general:
+  instance_name: "Cartha Hermes Agent Search"
+
+server:
+  # Replace REPLACE_AT_INSTALL with the output of `openssl rand -hex 32` or
+  # `python3 -c 'import secrets; print(secrets.token_hex(32))'`.
+  # start-searxng.sh handles this automatically on first run.
+  secret_key: "REPLACE_AT_INSTALL"
+  bind_address: "0.0.0.0"
+  port: 8080
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+ui:
+  static_use_hash: true
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: ""
+  ban_time_on_fail: 5
+  max_ban_time_on_fail: 120
+  formats:
+    - html
+    - json

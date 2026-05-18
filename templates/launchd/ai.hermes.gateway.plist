@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.hermes.gateway</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON_BIN__</string>
+    <string>-m</string>
+    <string>hermes_cli.main</string>
+    <string>gateway</string>
+    <string>run</string>
+    <string>--replace</string>
+  </array>
+  <key>WorkingDirectory</key><string>__AGENT_DIR__</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>StandardOutPath</key><string>__HERMES_HOME__/logs/gateway.log</string>
+  <key>StandardErrorPath</key><string>__HERMES_HOME__/logs/gateway.error.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HERMES_HOME</key><string>__HERMES_HOME__</string>
+    <key>VIRTUAL_ENV</key><string>__AGENT_DIR__/venv</string>
+    <key>PATH</key><string>__PATH__</string>
+  </dict>
+</dict>
+</plist>

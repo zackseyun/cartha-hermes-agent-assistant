@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.hermes.local-dashboard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HERMES_BIN__</string>
+    <string>dashboard</string>
+    <string>--no-open</string>
+  </array>
+  <key>WorkingDirectory</key><string>__AGENT_DIR__</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__HERMES_HOME__/logs/hermes-dashboard.log</string>
+  <key>StandardErrorPath</key><string>__HERMES_HOME__/logs/hermes-dashboard.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HERMES_HOME</key><string>__HERMES_HOME__</string>
+    <key>VIRTUAL_ENV</key><string>__AGENT_DIR__/venv</string>
+    <key>PATH</key><string>__PATH__</string>
+  </dict>
+</dict>
+</plist>

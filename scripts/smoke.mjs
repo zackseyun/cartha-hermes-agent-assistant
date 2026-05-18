@@ -1,16 +1,19 @@
+#!/usr/bin/env node
 const base = process.env.HERMES_UI_URL || "http://127.0.0.1:5128";
+const expectedCwd = process.env.EXPECTED_AGENT_CWD || "/Users/zackseyun/My Drive/Moltbot-Shared/Documents/GitHub";
 
 function parseDeltas(raw) {
   let text = "";
   let toolEvents = 0;
   for (const block of raw.split("\n\n")) {
-    if (block.includes("event: hermes.tool.progress")) toolEvents += 1;
+    if (block.includes("event: hermes.tool.progress") || block.includes("event: tool")) toolEvents += 1;
     for (const line of block.split("\n")) {
       if (!line.startsWith("data:")) continue;
       const data = line.slice(5).trim();
       if (!data || data === "[DONE]") continue;
       try {
-        text += JSON.parse(data)?.choices?.[0]?.delta?.content ?? "";
+        const parsed = JSON.parse(data);
+        text += parsed?.choices?.[0]?.delta?.content ?? parsed?.text ?? "";
       } catch {
         // ignore custom/non-JSON progress frames for smoke validation
       }
@@ -32,6 +35,7 @@ async function streamText(backend, content) {
 async function main() {
   const status = await fetch(`${base}/api/status`).then((res) => res.json());
   if (!status.ok) throw new Error(`status failed: ${JSON.stringify(status)}`);
+  console.log(`status ok: agent=${status.agentModel} small=${status.smallModel} vision=${status.model}`);
 
   const deepseek = await streamText("openrouter", "Reply exactly: deepseek ui ok");
   if (!deepseek.text.toLowerCase().includes("deepseek ui ok")) {
@@ -45,9 +49,10 @@ async function main() {
   }
 
   const agent = await streamText("hermes", "Use a terminal or file tool to print only the current working directory.");
-  if (!agent.text.includes("/Users/zackseyun/My Drive/Moltbot-Shared/Documents/GitHub")) {
-    throw new Error(`agent smoke failed: ${agent.text}`);
+  if (expectedCwd && !agent.text.includes(expectedCwd)) {
+    throw new Error(`agent smoke failed: expected cwd ${expectedCwd}, got: ${agent.text}`);
   }
+  if (!agent.text.trim()) throw new Error("agent smoke failed: empty response");
 
   console.log("smoke ok");
 }

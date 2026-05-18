@@ -73,13 +73,16 @@ async function getApiKey() {
 
 let cachedOpenRouterKey = null;
 async function getOpenRouterKey() {
-  if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY;
   if (cachedOpenRouterKey) return cachedOpenRouterKey;
 
   const envPath = path.join(process.env.HOME || "", ".hermes", ".env");
   const rawEnv = await fs.readFile(envPath, "utf8").catch(() => "");
   cachedOpenRouterKey = readDotenvValue(rawEnv, "OPENROUTER_API_KEY");
   if (cachedOpenRouterKey) return cachedOpenRouterKey;
+
+  // Prefer ~/.hermes/.env over the parent shell. Long-lived terminals often
+  // carry stale provider keys; the Hermes home file is the runtime source of truth.
+  if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY;
 
   const authPath = path.join(process.env.HOME || "", ".hermes", "auth.json");
   try {

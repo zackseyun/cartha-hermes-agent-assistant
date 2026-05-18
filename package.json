@@ -1,15 +1,31 @@
 {
-  "name": "cartha-hermes-local",
-  "version": "0.1.0",
-  "private": true,
+  "name": "cartha-hermes-agent-assistant",
+  "version": "0.2.0",
+  "description": "Cartha Hermes Agent Assistant — a batteries-included local AI assistant stack: Hermes gateway, dashboard, workspace UI, operator console, autonomous heartbeat custodian, and self-hosted SearXNG web search backend.",
+  "license": "MIT",
   "type": "module",
+  "bin": {
+    "cartha-hermes-agent-assistant": "./scripts/install.mjs"
+  },
   "scripts": {
     "start": "node server.mjs",
     "dev": "HERMES_UI_PORT=5128 node --watch server.mjs",
-    "check": "node --check server.mjs && node --check public/app.js && node --check scripts/smoke.mjs",
-    "smoke": "node scripts/smoke.mjs"
+    "check": "node --check server.mjs && node --check public/app.js && node --check scripts/*.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "install:stack": "node scripts/install.mjs",
+    "searxng:start": "bash templates/searxng/start-searxng.sh",
+    "reset:openrouter": "node scripts/reset-openrouter-pool.mjs"
   },
   "engines": {
     "node": ">=20"
-  }
+  },
+  "files": [
+    "server.mjs",
+    "public",
+    "scripts",
+    "templates",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ]
 }
