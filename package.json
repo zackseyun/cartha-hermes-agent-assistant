@@ -14,7 +14,10 @@
     "smoke": "node scripts/smoke.mjs",
     "install:stack": "node scripts/install.mjs",
     "searxng:start": "bash templates/searxng/start-searxng.sh",
-    "reset:openrouter": "node scripts/reset-openrouter-pool.mjs"
+    "reset:openrouter": "node scripts/reset-openrouter-pool.mjs",
+    "native:build": "bash scripts/build-native-app.sh",
+    "native:open": "bash scripts/open-native-app.sh",
+    "native:install-launch-agent": "bash scripts/install-native-launch-agent.sh"
   },
   "engines": {
     "node": ">=20"
@@ -24,6 +27,7 @@
     "public",
     "scripts",
     "templates",
+    "native",
     "docs",
     "README.md",
     "LICENSE"

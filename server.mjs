@@ -623,8 +623,13 @@ async function handleStatus(_req, res) {
     gemmaStatus = "ollama offline";
   }
 
-  sendJson(res, agentStatus === "online" ? 200 : 502, {
-    ok: agentStatus === "online",
+  // Hermes is now local-first: the stack is healthy when the local gateway
+  // or local Ollama runner is reachable. OpenRouter is only an optional fallback
+  // credential and should not make the native Swift surface look broken.
+  const stackHealthy = hermesGateway === "online" || gemmaStatus === "ollama online" || agentStatus === "online";
+
+  sendJson(res, stackHealthy ? 200 : 502, {
+    ok: stackHealthy,
     backend: DEFAULT_BACKEND,
     ollamaApiBase: OLLAMA_API_BASE,
     hermesApiBase: HERMES_API_BASE,

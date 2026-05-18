@@ -13,3 +13,4 @@ logs/
 # build/test artifacts
 coverage/
 dist/
+.build/

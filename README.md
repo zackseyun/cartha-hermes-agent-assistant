@@ -4,8 +4,9 @@ A batteries-included local AI assistant stack for macOS, built on the open-sourc
 
 - **Hermes Agent gateway** on `127.0.0.1:8642` for OpenAI-compatible agent/tool calls.
 - **Native Hermes dashboard** on `127.0.0.1:9119` for config, providers, sessions, skills, and diagnostics.
-- **Hermes Workspace** on `127.0.0.1:3000` for the richer chat/workspace UI.
-- **Small local operator console** on `127.0.0.1:5128` for quick status checks, image tests, and smoke-testing the agent path.
+- **Cartha Hermes native Swift app** as the primary user surface: top-right Swift bubble, native operator panel, wake controls, approvals, and embedded Workspace bridge.
+- **Hermes Workspace** on `127.0.0.1:3000` for the richer chat/workspace UI while capabilities are progressively ported into Swift.
+- **Small local operator console/API** on `127.0.0.1:5128` for status checks, native app APIs, image tests, and smoke-testing the agent path.
 - **Autonomous heartbeat custodian** that runs every 30 min — system observability, idle-app cleanup proposals, factual web search, and pending-task triage. Local-first; only escalates to the cloud "senior" model for genuine multi-step reasoning.
 - **Self-hosted SearXNG** web search backend on `127.0.0.1:8888` so the heartbeat can answer factual questions without OpenRouter calls.
 - **launchd service templates** so the stack survives terminal closes and reboots.
@@ -14,13 +15,13 @@ This repo packages the glue that made the local Hermes setup reliable: token pro
 
 ## Default model routing
 
-The defaults are intentionally editable:
+The installed runtime is **local-first**:
 
 | Role | Default | Why |
 | --- | --- | --- |
-| Agent brain | `xiaomi/mimo-v2.5-pro` via OpenRouter | Popular with Hermes-style agent workloads and large context. |
-| Smaller/fallback tasks | `deepseek/deepseek-v4-flash` via OpenRouter | Fast, cheaper backup route for smaller tool/task calls. |
-| Local vision test path | `gemma4:31b-hermes` via Ollama | Local multimodal/vision experimentation. |
+| Main Hermes agent | `qwen3.6:35b-hermes-256k` via local Ollama/OpenAI-compatible API (`127.0.0.1:11434/v1`) | Primary private/local reasoning path for Hermes. |
+| Local console / vision test path | `gemma4:31b-hermes` via local Ollama | Local multimodal/vision experimentation. |
+| Emergency fallback only | `deepseek/deepseek-v4-flash` via OpenRouter | Optional recovery route if the local model/gateway fails. Remove `fallback_providers` from `~/.hermes/config.yaml` for strict local-only mode. |
 
 Gemma 4 31B vision support depends on the Ollama/model build you install. Audio should usually be transcribed first, or routed through an audio-capable local model, then handed to the main agent/model for reasoning.
 
@@ -56,9 +57,29 @@ npm run smoke
 
 Open:
 
-- Local console: <http://127.0.0.1:5128>
+- Native Swift app: `npm run native:open`
+- Local console/API fallback: <http://127.0.0.1:5128>
 - Hermes Workspace: <http://127.0.0.1:3000>
 - Native Hermes dashboard: <http://127.0.0.1:9119>
+
+## Native Swift app
+
+The Swift app is the default human-facing shell. It opens as a small non-focus-stealing bubble in the upper-right corner and includes a fuller native panel with:
+
+- Operator chat through the local Hermes API.
+- Embedded Hermes Workspace bridge so the existing Workspace UI is available inside the app while it is ported to native Swift.
+- `Hey Cartha` wake listener status and controls.
+- Native Apple upload approval decisions.
+
+Commands:
+
+```bash
+npm run native:build
+npm run native:open
+npm run native:install-launch-agent
+```
+
+The web console remains a fallback/API daemon; routine user interaction should go through Swift.
 
 ## Installation options
 
