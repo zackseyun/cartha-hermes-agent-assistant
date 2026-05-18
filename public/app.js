@@ -21,11 +21,19 @@ const testFlightModalNo = document.querySelector("#testflight-modal-no");
 const testFlightModalLater = document.querySelector("#testflight-modal-later");
 const attachmentsEl = document.querySelector("#attachments");
 const attachmentPreview = document.querySelector("#attachment-preview");
+const refreshCanvasButton = document.querySelector("#refresh-canvas");
+const wakeStatusEl = document.querySelector("#wake-status");
+const wakeDetailEl = document.querySelector("#wake-detail");
+const wakeGuardrailsEl = document.querySelector("#wake-guardrails");
+const activeWorkList = document.querySelector("#active-work-list");
+const sessionList = document.querySelector("#session-list");
+const sessionDetail = document.querySelector("#session-detail");
 
 let conversation = [];
 let activeController = null;
 let activeModalProposal = null;
 let activeModalTimer = null;
+let canvasSessions = [];
 const deferredModalIds = new Set();
 
 function selectedBackend() {
@@ -259,6 +267,150 @@ async function refreshStatus() {
   }
 }
 
+function setWakeStatus(data) {
+  if (!wakeStatusEl) return;
+  wakeStatusEl.className = `canvas-status ${data.active ? "is-ok" : "is-muted"}`;
+  wakeStatusEl.textContent = data.active
+    ? `Active — wake phrase is “${data.wakePrompt || "hey cartha"}”`
+    : "Muted — Alfred still works";
+  wakeDetailEl.textContent = [
+    data.toggleText || "",
+    data.whisperRunning ? "resident Whisper server online" : "Whisper server not running",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  wakeGuardrailsEl.innerHTML = "";
+  for (const item of data.guardrails || []) {
+    const li = document.createElement("li");
+    li.textContent = item;
+    wakeGuardrailsEl.appendChild(li);
+  }
+}
+
+function renderActiveWork(activeWork = {}) {
+  if (!activeWorkList) return;
+  activeWorkList.innerHTML = "";
+  const items = [];
+  if (activeWork.pendingAppleUploads) {
+    items.push({
+      title: `${activeWork.pendingAppleUploads} Apple upload decision${activeWork.pendingAppleUploads === 1 ? "" : "s"}`,
+      subtitle: (activeWork.pendingAppleUploadLabels || []).join(" · ") || "Open release gate on the left.",
+    });
+  }
+  for (const task of activeWork.recentTasks || []) {
+    if (!task.text) continue;
+    items.push({
+      title: task.title || "Recent Cartha task",
+      subtitle: `${task.source || "local"}${task.mode ? ` · ${task.mode}` : ""}${task.ts ? ` · ${formatDateTime(task.ts)}` : ""} — ${task.text}`,
+    });
+  }
+  for (const line of activeWork.heartbeatLines || []) {
+    items.push({ title: "Heartbeat note", subtitle: line });
+  }
+
+  if (!items.length) {
+    activeWorkList.textContent = "No active work found yet.";
+    return;
+  }
+
+  for (const item of items.slice(0, 10)) {
+    const node = document.createElement("div");
+    node.className = "canvas-list-item";
+    const title = document.createElement("div");
+    title.className = "canvas-item-title";
+    title.textContent = item.title;
+    const subtitle = document.createElement("div");
+    subtitle.className = "muted";
+    subtitle.textContent = item.subtitle;
+    node.append(title, subtitle);
+    activeWorkList.appendChild(node);
+  }
+}
+
+function sessionKindLabel(kind) {
+  if (kind === "scheduled") return "Cron";
+  if (kind === "api") return "API";
+  if (kind === "direct") return "Direct";
+  return kind || "Session";
+}
+
+function showSessionDetail(session) {
+  if (!sessionDetail || !session) return;
+  sessionDetail.classList.remove("hidden");
+  sessionDetail.innerHTML = "";
+  const title = document.createElement("div");
+  title.className = "canvas-item-title";
+  title.textContent = session.title || session.id;
+  const meta = document.createElement("div");
+  meta.className = "muted";
+  meta.textContent = `${sessionKindLabel(session.kind)} · ${formatDateTime(session.updated_at)} · ${session.message_count || 0} messages · ${session.model || "unknown model"}`;
+  const user = document.createElement("div");
+  user.className = "session-snippet";
+  user.textContent = session.last_user ? `Last ask: ${session.last_user}` : "No user preview available.";
+  const assistant = document.createElement("div");
+  assistant.className = "session-snippet";
+  assistant.textContent = session.last_assistant ? `Last reply: ${session.last_assistant}` : "No assistant preview available yet.";
+  const pathLine = document.createElement("div");
+  pathLine.className = "muted session-path";
+  pathLine.textContent = session.path || session.file || "";
+  sessionDetail.append(title, meta, user, assistant, pathLine);
+}
+
+function renderSessions(sessions = []) {
+  if (!sessionList) return;
+  canvasSessions = sessions;
+  sessionList.innerHTML = "";
+  const selectedFile = new URLSearchParams(window.location.search).get("session");
+  if (!sessions.length) {
+    sessionList.textContent = "No Hermes session files found.";
+    return;
+  }
+
+  for (const session of sessions.slice(0, 18)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `session-item ${selectedFile && selectedFile === session.file ? "is-selected" : ""}`;
+    const title = document.createElement("span");
+    title.className = "canvas-item-title";
+    title.textContent = session.title || session.id;
+    const meta = document.createElement("span");
+    meta.className = "muted";
+    meta.textContent = `${sessionKindLabel(session.kind)} · ${formatDateTime(session.updated_at)} · ${session.message_count || 0} msg`;
+    button.append(title, meta);
+    button.addEventListener("click", () => {
+      document.querySelectorAll(".session-item").forEach((node) => node.classList.remove("is-selected"));
+      button.classList.add("is-selected");
+      showSessionDetail(session);
+    });
+    sessionList.appendChild(button);
+  }
+
+  const selected = sessions.find((session) => selectedFile && session.file === selectedFile) || sessions[0];
+  showSessionDetail(selected);
+}
+
+async function refreshCanvas() {
+  if (wakeStatusEl) wakeStatusEl.textContent = "Checking wake listener…";
+  if (activeWorkList) activeWorkList.textContent = "Loading current work…";
+  if (sessionList) sessionList.textContent = "Loading sessions…";
+  try {
+    const [wakeRes, sessionsRes] = await Promise.all([fetch("/api/wake-status"), fetch("/api/sessions")]);
+    const wake = await wakeRes.json();
+    const sessionsPayload = await sessionsRes.json();
+    if (!wakeRes.ok || !wake.ok) throw new Error(wake.detail || wake.error || "wake status failed");
+    if (!sessionsRes.ok || !sessionsPayload.ok) throw new Error(sessionsPayload.detail || sessionsPayload.error || "session refresh failed");
+    setWakeStatus(wake);
+    renderActiveWork(sessionsPayload.activeWork || {});
+    renderSessions(sessionsPayload.sessions || []);
+  } catch (err) {
+    if (wakeStatusEl) {
+      wakeStatusEl.className = "canvas-status is-warn";
+      wakeStatusEl.textContent = `Canvas refresh failed: ${err.message || err}`;
+    }
+  }
+}
+
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -442,6 +594,7 @@ clearButton.addEventListener("click", () => {
 });
 refreshButton.addEventListener("click", () => void refreshStatus());
 refreshTestFlightButton?.addEventListener("click", () => void refreshTestFlightProposals());
+refreshCanvasButton?.addEventListener("click", () => void refreshCanvas());
 testFlightModalYes?.addEventListener("click", async () => {
   if (!activeModalProposal) return;
   testFlightModalYes.disabled = true;
@@ -481,5 +634,7 @@ document.querySelectorAll("[data-prompt]").forEach((button) => {
 addMessage("system", "New Hermes agent session. Cmd+Enter sends immediately. Agent mode uses MiMo V2.5 Pro through Hermes tools; DeepSeek mode is for smaller text tasks; Gemma mode is for local vision/chat.");
 void refreshStatus();
 void refreshTestFlightProposals();
+void refreshCanvas();
 setInterval(refreshTestFlightProposals, 30_000);
+setInterval(refreshCanvas, 60_000);
 updateAttachmentPreview();

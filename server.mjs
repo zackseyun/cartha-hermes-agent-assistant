@@ -24,6 +24,17 @@ const TESTFLIGHT_PROPOSALS_PATH =
   process.env.CARTHA_TESTFLIGHT_PROPOSALS_PATH || path.join(HOME, ".hermes", "cartha-testflight-proposals.json");
 const CARTHA_GITHUB_REPO = process.env.CARTHA_GITHUB_REPO || "zackseyun/cartha.ai.mobile";
 const IOS_TESTFLIGHT_SH = process.env.CARTHA_IOS_TESTFLIGHT_SH || path.join(HOME, ".hermes", "scripts", "cartha-ios-testflight.sh");
+const HERMES_SESSIONS_DIR = process.env.HERMES_SESSIONS_DIR || path.join(HOME, ".hermes", "sessions");
+const HERMES_PROCESSED_REPLIES_PATH =
+  process.env.HERMES_PROCESSED_REPLIES_PATH || path.join(HOME, ".hermes", "heartbeat-replies-processed.jsonl");
+const HERMES_HEARTBEAT_JOURNAL_PATH =
+  process.env.HERMES_HEARTBEAT_JOURNAL_PATH || path.join(HOME, ".hermes", "heartbeat-journal.md");
+const CARTHA_VOICE_TOGGLE_SH =
+  process.env.CARTHA_VOICE_TOGGLE_SH || path.join(HOME, ".hermes", "scripts", "cartha-voice-toggle.sh");
+const CARTHA_VOICE_LISTENER =
+  process.env.CARTHA_VOICE_LISTENER || path.join(HOME, ".hermes", "scripts", "cartha-voice-listener.py");
+const CARTHA_WAKE_PROMPT = process.env.CARTHA_WAKE_PROMPT || "hey cartha";
+const CARTHA_WHISPER_PORT = process.env.CARTHA_WHISPER_PORT || "18187";
 
 const CONTENT_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -141,6 +152,145 @@ async function writeJsonFile(filePath, value) {
   const tmp = `${filePath}.tmp`;
   await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`);
   await fs.rename(tmp, filePath);
+}
+
+function clampText(value, max = 220) {
+  const text = String(value || "").replace(/\s+/gu, " ").trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trim()}…`;
+}
+
+function messageText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (typeof part?.text === "string") return part.text;
+        return "";
+      })
+      .filter(Boolean)
+      .join(" ");
+  }
+  return "";
+}
+
+function cleanSessionPreview(text) {
+  return clampText(
+    String(text || "")
+      .replace(/^\[IMPORTANT:[\s\S]*?\]\s*/u, "")
+      .replace(/^DELIVERY:[\s\S]*?\. /u, ""),
+    240,
+  );
+}
+
+function sessionKind(fileName, sessionId) {
+  const value = `${fileName} ${sessionId || ""}`.toLowerCase();
+  if (value.includes("cron_") || value.includes("session_cron")) return "scheduled";
+  if (value.includes("session_api")) return "api";
+  return "direct";
+}
+
+function publicHermesSession(filePath, stat, data) {
+  const fileName = path.basename(filePath);
+  const messages = Array.isArray(data?.messages) ? data.messages : [];
+  const lastUser =
+    [...messages].reverse().find((message) => message?.role === "user" && !messageText(message.content).trim().startsWith("[IMPORTANT:")) ||
+    [...messages].reverse().find((message) => message?.role === "user");
+  const lastAssistant = [...messages].reverse().find((message) => message?.role === "assistant");
+  const sessionId = String(data?.session_id || fileName.replace(/\.json$/u, ""));
+  const kind = sessionKind(fileName, sessionId);
+  const title =
+    (messageText(lastUser?.content).trim().startsWith("[IMPORTANT:") ? "" : cleanSessionPreview(messageText(lastUser?.content))) ||
+    clampText(String(data?.title || data?.summary || ""), 120) ||
+    (kind === "scheduled" ? `Scheduled run · ${sessionId}` : "") ||
+    sessionId;
+
+  return {
+    id: sessionId,
+    file: fileName,
+    path: filePath,
+    kind,
+    model: data?.model || "",
+    platform: data?.platform || "",
+    title,
+    last_user: cleanSessionPreview(messageText(lastUser?.content)),
+    last_assistant: cleanSessionPreview(messageText(lastAssistant?.content)),
+    message_count: Number(data?.message_count) || messages.length,
+    started_at: data?.session_start || data?.created_at || null,
+    updated_at: data?.last_updated || new Date(stat.mtimeMs).toISOString(),
+    mtime_ms: stat.mtimeMs,
+  };
+}
+
+async function readRecentSessions(limit = 36) {
+  const entries = await fs.readdir(HERMES_SESSIONS_DIR, { withFileTypes: true }).catch(() => []);
+  const files = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const filePath = path.join(HERMES_SESSIONS_DIR, entry.name);
+    const stat = await fs.stat(filePath).catch(() => null);
+    if (stat) files.push({ filePath, stat });
+  }
+  files.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+
+  const sessions = [];
+  for (const item of files.slice(0, limit)) {
+    try {
+      const data = JSON.parse(await fs.readFile(item.filePath, "utf8"));
+      sessions.push(publicHermesSession(item.filePath, item.stat, data));
+    } catch {
+      sessions.push({
+        id: path.basename(item.filePath, ".json"),
+        file: path.basename(item.filePath),
+        path: item.filePath,
+        kind: "unreadable",
+        title: path.basename(item.filePath),
+        last_user: "",
+        last_assistant: "",
+        message_count: 0,
+        updated_at: new Date(item.stat.mtimeMs).toISOString(),
+        mtime_ms: item.stat.mtimeMs,
+      });
+    }
+  }
+  return sessions;
+}
+
+async function readJsonlTail(filePath, limit = 8) {
+  const raw = await fs.readFile(filePath, "utf8").catch(() => "");
+  if (!raw.trim()) return [];
+  return raw
+    .trim()
+    .split(/\r?\n/u)
+    .slice(-limit)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return { raw: line };
+      }
+    });
+}
+
+async function readTextTail(filePath, limit = 8) {
+  const raw = await fs.readFile(filePath, "utf8").catch(() => "");
+  if (!raw.trim()) return [];
+  return raw
+    .trim()
+    .split(/\r?\n/u)
+    .filter(Boolean)
+    .slice(-limit)
+    .map((line) => clampText(line, 220));
+}
+
+async function commandOk(command, args, options = {}) {
+  try {
+    await run(command, args, { timeout: 2_500, ...options });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function publicProposal(proposal) {
@@ -282,6 +432,66 @@ async function handleTestFlightAction(req, res, id, action) {
     await writeJsonFile(TESTFLIGHT_PROPOSALS_PATH, proposals);
     return sendError(res, 502, "Could not dispatch TestFlight workflow", proposals[index].deploy_error);
   }
+}
+
+async function handleHermesSessions(_req, res) {
+  const [sessions, recentTasks, heartbeatLines, proposals] = await Promise.all([
+    readRecentSessions(48),
+    readJsonlTail(HERMES_PROCESSED_REPLIES_PATH, 8),
+    readTextTail(HERMES_HEARTBEAT_JOURNAL_PATH, 8),
+    readJsonFile(TESTFLIGHT_PROPOSALS_PATH, []),
+  ]);
+  const pendingProposals = Array.isArray(proposals) ? proposals.filter((proposal) => proposal?.status === "pending") : [];
+  const activeSessions = sessions.filter((session) => Date.now() - Number(session.mtime_ms || 0) < 3 * 60 * 60 * 1000);
+
+  sendJson(res, 200, {
+    ok: true,
+    sessionsDir: HERMES_SESSIONS_DIR,
+    sessionCount: sessions.length,
+    activeSessionCount: activeSessions.length,
+    sessions,
+    activeWork: {
+      pendingAppleUploads: pendingProposals.length,
+      pendingAppleUploadLabels: pendingProposals.slice(0, 4).map((proposal) => `${proposal.channel_label || "Apple upload"} · ${proposal.short_sha || ""}`),
+      recentTasks: recentTasks.map((task) => ({
+        id: task.id || "",
+        ts: task.ts || "",
+        source: task.source || "",
+        mode: task.mode || "",
+        title: task.title || "Cartha Agent task",
+        text: clampText(task.reply || task.raw || "", 180),
+      })),
+      heartbeatLines,
+    },
+  });
+}
+
+async function handleWakeStatus(_req, res) {
+  const listenerRunning = await commandOk("pgrep", ["-f", CARTHA_VOICE_LISTENER]);
+  const launchd = await run("launchctl", ["print", `gui/${process.getuid?.() || ""}/dev.cartha.voice`], { timeout: 2_500, maxBuffer: 256 * 1024 })
+    .then((result) => result.stdout || "")
+    .catch(() => "");
+  const launchdRunning = /state = running/u.test(launchd);
+  const whisperRunning = await commandOk("pgrep", ["-f", `whisper-server .*--port ${CARTHA_WHISPER_PORT}`]);
+  const toggleText = await run(CARTHA_VOICE_TOGGLE_SH, ["status"], { timeout: 5_000, maxBuffer: 256 * 1024 })
+    .then((result) => (result.stdout || "").trim())
+    .catch((err) => String(err?.stderr || err?.stdout || err?.message || err).trim());
+
+  sendJson(res, 200, {
+    ok: true,
+    active: listenerRunning || launchdRunning,
+    listenerRunning,
+    launchdRunning,
+    whisperRunning,
+    wakePrompt: CARTHA_WAKE_PROMPT,
+    toggleText,
+    guardrails: [
+      "Only the phrase “Hey Cartha” wakes the agent; bare “Cartha” is not a wake phrase.",
+      "Wake/reply triggers are suppressed while the Fn/globe key is held, so local dictation gets priority.",
+      "Alfred/URL/manual task submission stays available even when wake listening is muted.",
+      "Destructive local autonomy still goes through the Hermes trusted-autonomy policy gates.",
+    ],
+  });
 }
 
 async function serveStatic(_req, res, pathname) {
@@ -563,6 +773,8 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || `${HOST}:${PORT}`}`);
     if (req.method === "GET" && url.pathname === "/api/status") return handleStatus(req, res);
+    if (req.method === "GET" && url.pathname === "/api/sessions") return handleHermesSessions(req, res);
+    if (req.method === "GET" && url.pathname === "/api/wake-status") return handleWakeStatus(req, res);
     if (req.method === "GET" && url.pathname === "/api/testflight/proposals") return handleTestFlightProposals(req, res);
     const testFlightAction = url.pathname.match(/^\/api\/testflight\/proposals\/([^/]+)\/(approve|skip)$/u);
     if (req.method === "POST" && testFlightAction) {

@@ -87,6 +87,35 @@
           </div>
         </form>
       </main>
+
+      <aside id="canvas" class="canvas-panel">
+        <div class="canvas-heading">
+          <div>
+            <div class="eyebrow">Alfred companion</div>
+            <h2>Cartha Canvas</h2>
+          </div>
+          <button id="refresh-canvas" class="ghost" type="button">Refresh</button>
+        </div>
+        <p class="muted canvas-note">Open this from Alfred with <strong>hermes</strong>. It keeps sessions, active work, and wake-word status beside your Spotlight flow.</p>
+
+        <section class="canvas-card" aria-live="polite">
+          <div class="canvas-section-title">Wake listener</div>
+          <div id="wake-status" class="canvas-status is-warn">Checking wake listener…</div>
+          <div id="wake-detail" class="muted"></div>
+          <ul id="wake-guardrails" class="guardrail-list"></ul>
+        </section>
+
+        <section class="canvas-card">
+          <div class="canvas-section-title">Active work</div>
+          <div id="active-work-list" class="canvas-list muted">Loading current work…</div>
+        </section>
+
+        <section class="canvas-card session-card">
+          <div class="canvas-section-title">Recent Hermes sessions</div>
+          <div id="session-list" class="session-list muted">Loading sessions…</div>
+          <div id="session-detail" class="session-detail hidden"></div>
+        </section>
+      </aside>
     </div>
     <div id="testflight-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="testflight-modal-title">
       <div class="modal-card">
