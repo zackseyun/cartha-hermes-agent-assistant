@@ -13,6 +13,7 @@
     "check": "node --check server.mjs && node --check public/app.js && node --check scripts/*.mjs",
     "smoke": "node scripts/smoke.mjs",
     "install:stack": "node scripts/install.mjs",
+    "install:heartbeat": "node scripts/install-heartbeat.mjs",
     "searxng:start": "bash templates/searxng/start-searxng.sh",
     "reset:openrouter": "node scripts/reset-openrouter-pool.mjs"
   },

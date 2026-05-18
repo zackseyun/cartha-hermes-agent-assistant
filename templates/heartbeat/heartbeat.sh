@@ -27,6 +27,26 @@ exec >/tmp/hermes-heartbeat.log 2>&1
 # Note: ~/.hermes/.env contains some values with unquoted spaces, so we don't
 # bash-source it. The Python agent reads .env directly for the keys it needs.
 
+if ! command -v timeout >/dev/null 2>&1; then
+  timeout() {
+    local seconds="$1"
+    shift
+    python3 - "$seconds" "$@" <<'PY'
+import subprocess
+import sys
+
+seconds = float(sys.argv[1])
+cmd = sys.argv[2:]
+
+try:
+    result = subprocess.run(cmd, timeout=seconds)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+sys.exit(result.returncode)
+PY
+  }
+fi
+
 LOGS_SH="$HOME/scripts/logs.sh"
 CACHE_DIR="$HOME/.hermes/cache"
 AGENT_PY="$HOME/.hermes/scripts/heartbeat-agent.py"

@@ -131,6 +131,7 @@ The kit ships a 30-minute autonomous heartbeat that lives in `templates/heartbea
 - `heartbeat.sh` — collects recent activity, OpenClaw context, pending agent-sync jobs, and a system snapshot, then pipes the bundle into `heartbeat-agent.py`.
 - `heartbeat-agent.py` — local model (default: `qwen3.6:35b-hermes-256k` on Ollama) picks exactly one tool. Tools include `noop`, `journal_entry`, `notify_user`, `show_visual`, `notify_user_dialog`, `set_timer`, `mark_job_done`, `web_search`, `safe_shell_query`, `fetch_url`, `read_calendar_today`, `read_mail_recent`, `escalate`, `propose_quit_app`, `propose_cleanup`.
 - `heartbeat-cleanup.sh` — gated cleanup executor (empty trash, Xcode DerivedData, iOS simulator caches, etc.).
+- `heartbeat-system.sh` — read-only macOS system snapshot used by the local model.
 - `heartbeat-config/policy.json` — phase + allowlist + denylist + cleanup actions + `trusted_autonomy` block for direct edit/test/build/git tasks in allowed roots.
 
 Phase 2 means destructive actions (quit app, cleanup) require concurrence from a cloud "senior" model (default `deepseek/deepseek-v4-flash` via OpenRouter). The heartbeat is **engineered to avoid over-escalation** — the system prompt walks an explicit decision tree that prefers local tools (web search, shell query, URL fetch) before reaching for the cloud, and a pre-deepseek content-fingerprint dedup skips identical-situation escalations.
@@ -138,12 +139,15 @@ Phase 2 means destructive actions (quit app, cleanup) require concurrence from a
 Install:
 
 ```bash
-cp templates/heartbeat/*.sh templates/heartbeat/*.py ~/.hermes/scripts/
-mkdir -p ~/.hermes/heartbeat-config
-cp templates/heartbeat-config/policy.json ~/.hermes/heartbeat-config/
-chmod +x ~/.hermes/scripts/heartbeat*.sh ~/.hermes/scripts/heartbeat-agent.py
-# Schedule via launchd or cron — see policy.json _comment for phase semantics.
+npm run install:heartbeat -- --bootstrap
+
+# The heartbeat expects this local Ollama tag:
+ollama pull hf.co/opensota/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M
+ollama create qwen3.6:35b-hermes-256k \
+  -f <(printf 'FROM hf.co/opensota/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M\nPARAMETER num_ctx 262144\n')
 ```
+
+The heartbeat serves this model through recent `llama-server` on `127.0.0.1:11435` because Ollama builds that do not recognize the `qwen35moe` GGUF architecture fail to load it. The launchd template defaults `QWEN36_CONTEXT` to `32768` for stable local operation; set `QWEN36_CONTEXT=262144` before running the installer if the target Mac/runtime can hold the full window.
 
 ## Microsoft 365 (calendar + mail) integration
 

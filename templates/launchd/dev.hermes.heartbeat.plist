@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.hermes.heartbeat</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HERMES_HOME__/scripts/heartbeat.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>__PATH__</string>
+    <key>HEARTBEAT_MODEL</key><string>qwen3.6:35b-hermes-256k</string>
+    <key>HEARTBEAT_LOCAL_BACKEND</key><string>openai</string>
+    <key>HEARTBEAT_LOCAL_API_BASE</key><string>http://127.0.0.1:11435/v1</string>
+  </dict>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>__HERMES_HOME__/logs/heartbeat.launchd.log</string>
+  <key>StandardErrorPath</key><string>__HERMES_HOME__/logs/heartbeat.launchd.err.log</string>
+</dict>
+</plist>
