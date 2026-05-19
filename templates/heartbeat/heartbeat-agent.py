@@ -1399,6 +1399,10 @@ def format_autonomy_message(result: dict) -> str:
     if isinstance(next_steps, list) and next_steps:
         lines.append("")
         lines.append("Next: " + " · ".join(str(x) for x in next_steps[:3]))
+    artifact_path = result.get("artifact_path")
+    if artifact_path:
+        lines.append("")
+        lines.append(f"Run artifact: {artifact_path}")
     return "\n".join(lines)[:2200]
 
 
@@ -1495,6 +1499,9 @@ def main() -> int:
             run_id = result.get("run_id")
             if run_id:
                 journal_append(f"  ↳ run_id={run_id}")
+            artifact_path = result.get("artifact_path")
+            if artifact_path:
+                journal_append(f"  ↳ artifact={artifact_path}")
             notify_macos(
                 "Cartha Agent",
                 message,
