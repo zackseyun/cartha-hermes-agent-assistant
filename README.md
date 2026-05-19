@@ -13,6 +13,18 @@ A batteries-included local AI assistant stack for macOS, built on the open-sourc
 
 This repo packages the glue that made the local Hermes setup reliable: token propagation, launchd process ownership, OpenRouter model defaults, simple smoke tests, the heartbeat custodian, the SearXNG search backend, and an optional lightweight UI.
 
+## Adaptive thinking
+
+The Ask surface now picks a reasoning effort per prompt before it talks to Hermes:
+
+- **Low** for quick/simple prompts (`quick`, `brief`, `short answer`, `define`, `rewrite`, `translate`).
+- **Medium** for normal day-to-day asks.
+- **High** for analysis, debugging, architecture, robust implementation, investigation, or design review.
+- **Extra high (`xhigh`)** for explicit deep-thinking phrases like `think hard`, `think carefully`, `go deep`, `reason through`, `be thoughtful`, `root cause`, or `best possible`.
+- **Off (`none`)** only when explicitly asked with phrases like `no thinking` or `disable reasoning`.
+
+You can force a turn with inline syntax such as `thinking: low`, `reasoning: xhigh`, or `/think high`. The native cockpit shows the selected level in Activity, and the local console writes it into `~/.hermes/config.yaml` immediately before the Hermes request so the gateway uses the right level for that turn. Set `HERMES_ADAPTIVE_THINKING=0` to disable this, or `HERMES_ADAPTIVE_THINKING_WRITE_CONFIG=0` to preview/pass request metadata without changing the Hermes config.
+
 ## Default model routing
 
 The installed runtime is **local-first**:

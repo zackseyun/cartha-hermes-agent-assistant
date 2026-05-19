@@ -306,6 +306,146 @@ struct WireMessage: Encodable {
 struct ChatRequest: Encodable {
     let backend: String
     let messages: [WireMessage]
+    let reasoningEffort: String?
+
+    enum CodingKeys: String, CodingKey {
+        case backend
+        case messages
+        case reasoningEffort = "reasoning_effort"
+    }
+}
+
+struct AdaptiveThinkingSelection: Equatable {
+    let effort: String
+    let source: String
+    let reason: String
+
+    var displayEffort: String {
+        switch effort {
+        case "none": return "off"
+        case "xhigh": return "extra high"
+        default: return effort
+        }
+    }
+}
+
+enum AdaptiveThinking {
+    private static let validEfforts: Set<String> = ["none", "minimal", "low", "medium", "high", "xhigh"]
+    private static let aliases: [String: String] = [
+        "off": "none",
+        "disable": "none",
+        "disabled": "none",
+        "min": "minimal",
+        "minimum": "minimal",
+        "med": "medium",
+        "extra high": "xhigh",
+        "extra-high": "xhigh",
+        "very high": "xhigh",
+        "max": "xhigh",
+        "maximum": "xhigh",
+        "deep": "xhigh"
+    ]
+
+    static func normalizeEffort(_ value: String) -> String? {
+        let spaced = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: ".", with: " ")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        guard !spaced.isEmpty else { return nil }
+        let compact = spaced.replacingOccurrences(of: #"[\s-]+"#, with: "", options: .regularExpression)
+        if validEfforts.contains(spaced) { return spaced }
+        if validEfforts.contains(compact) { return compact }
+        return aliases[spaced] ?? aliases[compact]
+    }
+
+    private static func containsAny(_ text: String, _ phrases: [String]) -> Bool {
+        phrases.contains { text.contains($0) }
+    }
+
+    private static func regex(_ text: String, _ pattern: String) -> Bool {
+        text.range(of: pattern, options: [.regularExpression]) != nil
+    }
+
+    private static func inlineRequestedEffort(_ text: String) -> String? {
+        let patterns = [
+            #"(?:^|\b)(?:thinking|think|reasoning|reasoning effort|effort)\s*[:=]\s*(none|minimal|low|medium|high|xhigh|extra[\s-]?high|max(?:imum)?|off)\b"#,
+            #"/(?:reasoning|think)\s+(none|minimal|low|medium|high|xhigh|extra[\s-]?high|max(?:imum)?|off)\b"#
+        ]
+        for pattern in patterns {
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard let match = expression.firstMatch(in: text, range: range), match.numberOfRanges > 1,
+                  let levelRange = Range(match.range(at: 1), in: text) else { continue }
+            return normalizeEffort(String(text[levelRange]))
+        }
+        return nil
+    }
+
+    static func select(for prompt: String) -> AdaptiveThinkingSelection {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = trimmed
+            .lowercased()
+            .replacingOccurrences(of: "“", with: "\"")
+            .replacingOccurrences(of: "”", with: "\"")
+            .replacingOccurrences(of: "’", with: "'")
+
+        if let inline = inlineRequestedEffort(text) {
+            return AdaptiveThinkingSelection(effort: inline, source: "keyword", reason: "inline trigger requested \(inline)")
+        }
+        if text.isEmpty {
+            return AdaptiveThinkingSelection(effort: "medium", source: "default", reason: "empty prompt")
+        }
+        if regex(text, #"\b(?:no|disable|turn off|without)\s+(?:thinking|reasoning)\b|\b(?:no need to think|don't think|dont think)\b"#) {
+            return AdaptiveThinkingSelection(effort: "none", source: "keyword", reason: "explicit no-thinking keyword")
+        }
+        if containsAny(text, [
+            "think hard", "think deeply", "think carefully", "really think", "take your time",
+            "go deep", "deep dive", "reason carefully", "reason through", "careful reasoning",
+            "extra high", "xhigh", "maximum thinking", "maximum reasoning", "highest thinking",
+            "highest reasoning", "be thoughtful", "thoughtfulness", "very thoughtful",
+            "deep analysis", "analyze deeply", "best possible", "most optimized", "root cause"
+        ]) {
+            return AdaptiveThinkingSelection(effort: "xhigh", source: "keyword", reason: "deep-thinking keyword")
+        }
+        if containsAny(text, [
+            "think through", "reason about", "reasoning", "analyze", "debug", "diagnose",
+            "investigate", "architecture", "architect", "tradeoff", "trade-off", "strategy",
+            "strategic", "robust", "resilient", "optimize", "optimise", "implementation plan",
+            "design review"
+        ]) {
+            return AdaptiveThinkingSelection(effort: "high", source: "keyword", reason: "reasoning-heavy keyword")
+        }
+
+        var complexity = 0
+        if trimmed.count > 320 { complexity += 1 }
+        if trimmed.count > 800 { complexity += 1 }
+        if regex(text, #"\b(?:implement|build|patch|fix|ship|refactor|migrate|deploy|test|verify|research|compare|audit|review|root cause|end[- ]to[- ]end|full chain)\b"#) { complexity += 2 }
+        if regex(text, #"[\w.-]+/(?:[\w.-]+/)*[\w.-]+|\b(?:\.swift|\.js|\.mjs|\.ts|\.tsx|\.py|\.json|\.yaml|\.yml)\b"#) { complexity += 1 }
+
+        let lowKeyword = containsAny(text, [
+            "quick", "quickly", "fast", "simple", "simply", "brief", "briefly",
+            "short answer", "one-liner", "one liner", "one sentence", "tl;dr", "tldr",
+            "just answer", "don't overthink", "dont overthink", "low thinking", "low reasoning",
+            "translate", "rewrite", "reword", "grammar", "typo", "define"
+        ])
+        let shortFact = trimmed.count <= 160 && regex(text, #"^(?:what|who|when|where|which|define|translate|rewrite|summari[sz]e)\b"#)
+
+        if complexity >= 5 {
+            return AdaptiveThinkingSelection(effort: "xhigh", source: "complexity", reason: "complexity score \(complexity)")
+        }
+        if complexity >= 3 {
+            return AdaptiveThinkingSelection(effort: "high", source: "complexity", reason: "complexity score \(complexity)")
+        }
+        if (lowKeyword || shortFact) && complexity == 0 {
+            return AdaptiveThinkingSelection(effort: "low", source: "keyword", reason: lowKeyword ? "speed/simple keyword" : "short factual prompt")
+        }
+        if complexity >= 1 {
+            return AdaptiveThinkingSelection(effort: "medium", source: "complexity", reason: "complexity score \(complexity)")
+        }
+        return AdaptiveThinkingSelection(effort: "medium", source: "default", reason: "routine prompt")
+    }
 }
 
 struct ServerError: Decodable {
@@ -643,9 +783,11 @@ final class HermesService: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isSending else { return }
         OperatorSound.send()
+        let adaptiveThinking = AdaptiveThinking.select(for: trimmed)
         messages.append(ChatMessage(role: "user", content: trimmed))
         messages.append(ChatMessage(role: "assistant", content: "Thinking locally…", activityEvents: [
             ActivityEvent(key: "privacy", kind: "guardrail", title: "Activity view ready", detail: "Shows live stream events, tool calls, status, and token-ish chunk counts. Private hidden reasoning is not exposed."),
+            ActivityEvent(key: "adaptive-thinking", kind: "stats", title: "Adaptive thinking", detail: "Selected \(adaptiveThinking.displayEffort) thinking · \(adaptiveThinking.reason)."),
             ActivityEvent(key: "request", kind: "status", title: "Request sent to local Hermes", detail: "Waiting for stream events…")
         ]))
         let assistantIndex = messages.count - 1
@@ -661,7 +803,7 @@ final class HermesService: ObservableObject {
                 .dropLast()
                 .suffix(12)
                 .map { WireMessage(role: $0.role, content: $0.content) }
-            let body = ChatRequest(backend: "hermes", messages: Array(history) + [WireMessage(role: "user", content: trimmed)])
+            let body = ChatRequest(backend: "hermes", messages: Array(history) + [WireMessage(role: "user", content: trimmed)], reasoningEffort: adaptiveThinking.effort)
             request.httpBody = try JSONEncoder().encode(body)
             request.timeoutInterval = 120
             let (bytes, response) = try await URLSession.shared.bytes(for: request)

@@ -207,6 +207,196 @@ function clampNumber(value, min, max, fallback) {
   return Math.min(max, Math.max(min, parsed));
 }
 
+const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
+const REASONING_EFFORT_ALIASES = new Map([
+  ["off", "none"],
+  ["disable", "none"],
+  ["disabled", "none"],
+  ["no", "none"],
+  ["zero", "none"],
+  ["min", "minimal"],
+  ["minimum", "minimal"],
+  ["med", "medium"],
+  ["extra high", "xhigh"],
+  ["extra-high", "xhigh"],
+  ["very high", "xhigh"],
+  ["max", "xhigh"],
+  ["maximum", "xhigh"],
+  ["deep", "xhigh"],
+]);
+
+function isAdaptiveThinkingEnabled() {
+  return process.env.HERMES_ADAPTIVE_THINKING !== "0";
+}
+
+function shouldWriteAdaptiveReasoningConfig() {
+  return isAdaptiveThinkingEnabled() && process.env.HERMES_ADAPTIVE_THINKING_WRITE_CONFIG !== "0";
+}
+
+function normalizeReasoningEffort(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  const spaced = raw.replace(/[_.]+/gu, " ").replace(/\s+/gu, " ").trim();
+  const compact = spaced.replace(/[\s-]+/gu, "");
+  if (VALID_REASONING_EFFORTS.has(spaced)) return spaced;
+  if (VALID_REASONING_EFFORTS.has(compact)) return compact;
+  return REASONING_EFFORT_ALIASES.get(spaced) || REASONING_EFFORT_ALIASES.get(compact) || "";
+}
+
+function chatContentToText(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (!part || typeof part !== "object") return "";
+        if (typeof part.text === "string") return part.text;
+        if (typeof part.content === "string") return part.content;
+        if (part.type === "image_url" || part.image_url || part.type === "input_image") return "[image]";
+        if (part.type === "input_audio" || part.input_audio) return "[audio]";
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (content && typeof content === "object") {
+    if (typeof content.text === "string") return content.text;
+    if (typeof content.content === "string") return content.content;
+  }
+  return "";
+}
+
+function latestUserText(messages) {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role === "user") return chatContentToText(message.content);
+  }
+  return "";
+}
+
+function countRegexMatches(text, regex) {
+  return Array.from(text.matchAll(regex)).length;
+}
+
+function selectAdaptiveReasoningEffort(messages, requestedEffort = "") {
+  const explicit = normalizeReasoningEffort(requestedEffort);
+  if (explicit) {
+    return { effort: explicit, source: "override", reason: `caller requested ${explicit}` };
+  }
+
+  if (!isAdaptiveThinkingEnabled()) {
+    return { effort: "medium", source: "disabled", reason: "adaptive thinking disabled" };
+  }
+
+  const text = latestUserText(messages).trim();
+  const normalized = text.toLowerCase().replace(/[“”]/gu, '"').replace(/[’]/gu, "'");
+
+  const inline = normalized.match(/(?:^|\b)(?:thinking|think|reasoning|reasoning effort|effort)\s*[:=]\s*(none|minimal|low|medium|high|xhigh|extra[\s-]?high|max(?:imum)?|off)\b/u)
+    || normalized.match(/\/(?:reasoning|think)\s+(none|minimal|low|medium|high|xhigh|extra[\s-]?high|max(?:imum)?|off)\b/u);
+  if (inline) {
+    const effort = normalizeReasoningEffort(inline[1]);
+    if (effort) return { effort, source: "keyword", reason: `inline trigger requested ${effort}` };
+  }
+
+  if (!normalized) return { effort: "medium", source: "default", reason: "empty or attachment-only prompt" };
+
+  if (/\b(?:no|disable|turn off|without)\s+(?:thinking|reasoning)\b|\b(?:no need to think|don't think|dont think)\b/u.test(normalized)) {
+    return { effort: "none", source: "keyword", reason: "explicit no-thinking keyword" };
+  }
+
+  if (/\b(?:think hard|think deeply|think carefully|really think|take your time|go deep|deep dive|reason carefully|reason through|careful reasoning|extra[\s-]?high|xhigh|max(?:imum)? (?:thinking|reasoning)|highest (?:thinking|reasoning)|be thoughtful|thoughtfulness|very thoughtful|deep analysis|analyze deeply|best possible|most optimized|root cause)\b/u.test(normalized)) {
+    return { effort: "xhigh", source: "keyword", reason: "deep-thinking keyword" };
+  }
+
+  if (/\b(?:think through|reason about|reasoning|analyze|debug|diagnose|investigate|architecture|architect|trade[ -]?offs?|strategy|strategic|robust|resilient|optimi[sz]e|implementation plan|design review)\b/u.test(normalized)) {
+    return { effort: "high", source: "keyword", reason: "reasoning-heavy keyword" };
+  }
+
+  const lowKeyword = /\b(?:quick|quickly|fast|simple|simply|brief|briefly|short answer|one[- ]liner|one sentence|tl;dr|tldr|just answer|don't overthink|dont overthink|low thinking|low reasoning|translate|rewrite|reword|grammar|typo|define)\b/u.test(normalized);
+  const shortFact = text.length <= 160 && /^(?:what|who|when|where|which|define|translate|rewrite|summari[sz]e)\b/u.test(normalized);
+
+  let complexity = 0;
+  if (text.length > 320) complexity += 1;
+  if (text.length > 800) complexity += 1;
+  if (countRegexMatches(normalized, /\b(?:and|also|then|after that|plus)\b/gu) >= 2) complexity += 1;
+  if (/\b(?:implement|build|patch|fix|ship|refactor|migrate|deploy|test|verify|research|compare|audit|review|root cause|end[- ]to[- ]end|full chain)\b/u.test(normalized)) complexity += 2;
+  if (/[\w.-]+\/(?:[\w.-]+\/)*[\w.-]+|\b(?:\.swift|\.js|\.mjs|\.ts|\.tsx|\.py|\.json|\.yaml|\.yml)\b/u.test(normalized)) complexity += 1;
+  if (normalized.includes("[image]") || normalized.includes("[audio]")) complexity += 1;
+
+  if (complexity >= 5) return { effort: "xhigh", source: "complexity", reason: `complexity score ${complexity}` };
+  if (complexity >= 3) return { effort: "high", source: "complexity", reason: `complexity score ${complexity}` };
+  if ((lowKeyword || shortFact) && complexity === 0) return { effort: "low", source: "keyword", reason: lowKeyword ? "speed/simple keyword" : "short factual prompt" };
+  if (complexity >= 1) return { effort: "medium", source: "complexity", reason: `complexity score ${complexity}` };
+  return { effort: "medium", source: "default", reason: "routine prompt" };
+}
+
+function reasoningPayloadForEffort(effort) {
+  const normalized = normalizeReasoningEffort(effort) || "medium";
+  if (normalized === "none") return { reasoning_effort: "none", reasoning: { enabled: false } };
+  return { reasoning_effort: normalized, reasoning: { enabled: true, effort: normalized } };
+}
+
+async function readHermesReasoningEffort() {
+  const raw = await fs.readFile(HERMES_CONFIG_PATH, "utf8").catch(() => "");
+  const lines = raw.split(/\r?\n/u);
+  let inAgent = false;
+  for (const line of lines) {
+    if (/^agent:\s*(?:#.*)?$/u.test(line)) {
+      inAgent = true;
+      continue;
+    }
+    if (inAgent && /^\S/u.test(line)) break;
+    if (inAgent) {
+      const match = line.match(/^\s+reasoning_effort:\s*([^#\n]+)\s*(?:#.*)?$/u);
+      if (match) return normalizeReasoningEffort(match[1].replace(/^['"]|['"]$/gu, "")) || match[1].trim();
+    }
+  }
+  return "";
+}
+
+function updateReasoningEffortInYaml(raw, effort) {
+  const lines = raw.split(/\r?\n/u);
+  const hadTrailingNewline = raw.endsWith("\n");
+  let agentIndex = lines.findIndex((line) => /^agent:\s*(?:#.*)?$/u.test(line));
+  if (agentIndex < 0) {
+    const base = hadTrailingNewline ? raw : `${raw}\n`;
+    return `${base}agent:\n  reasoning_effort: ${effort}\n`;
+  }
+
+  let blockEnd = lines.length;
+  for (let i = agentIndex + 1; i < lines.length; i += 1) {
+    if (/^\S/u.test(lines[i])) {
+      blockEnd = i;
+      break;
+    }
+  }
+
+  for (let i = agentIndex + 1; i < blockEnd; i += 1) {
+    if (/^\s+reasoning_effort:/u.test(lines[i])) {
+      lines[i] = lines[i].replace(/^([\t ]*)reasoning_effort:\s*.*$/u, `$1reasoning_effort: ${effort}`);
+      return `${lines.join("\n")}${hadTrailingNewline ? "\n" : ""}`;
+    }
+  }
+
+  lines.splice(agentIndex + 1, 0, `  reasoning_effort: ${effort}`);
+  return `${lines.join("\n")}${hadTrailingNewline ? "\n" : ""}`;
+}
+
+async function applyAdaptiveReasoningConfig(selection) {
+  if (!shouldWriteAdaptiveReasoningConfig()) return { changed: false, skipped: true };
+  const effort = normalizeReasoningEffort(selection?.effort) || "medium";
+  const current = await readHermesReasoningEffort();
+  if (current === effort) return { changed: false, current };
+  const raw = await fs.readFile(HERMES_CONFIG_PATH, "utf8").catch(() => "");
+  const next = updateReasoningEffortInYaml(raw, effort);
+  await fs.mkdir(path.dirname(HERMES_CONFIG_PATH), { recursive: true });
+  const tmp = `${HERMES_CONFIG_PATH}.adaptive-thinking.tmp`;
+  await fs.writeFile(tmp, next, { mode: 0o600 });
+  await fs.rename(tmp, HERMES_CONFIG_PATH);
+  console.log(`adaptive-thinking: ${current || "unset"} -> ${effort} (${selection.source}: ${selection.reason})`);
+  return { changed: true, previous: current, current: effort };
+}
+
 function slugifyResearchTitle(value) {
   const slug = String(value || "research")
     .toLowerCase()
@@ -1615,10 +1805,38 @@ async function buildStatusPayload() {
     smallModel: OPENROUTER_SMALL_MODEL,
     creditRemainingUsd,
     hermesModel: HERMES_MODEL,
+    adaptiveThinking: {
+      enabled: isAdaptiveThinkingEnabled(),
+      configWrite: shouldWriteAdaptiveReasoningConfig(),
+      currentReasoningEffort: await readHermesReasoningEffort(),
+      efforts: Array.from(VALID_REASONING_EFFORTS),
+    },
     latencyMs: Date.now() - startedAt,
     status: agentHttpStatus || (agentStatus === "online" ? 200 : 502),
     sample: agentSample,
   };
+}
+
+async function handleAdaptiveThinkingPreview(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendError(res, err.status || 400, err.message || "Invalid JSON body");
+  }
+  const messages = normalizeMessages(body.messages || [{ role: "user", content: body.text || "" }]);
+  const selection = selectAdaptiveReasoningEffort(
+    messages,
+    body.reasoning_effort || body.reasoningEffort || body.thinking_level || body.thinkingLevel || "",
+  );
+  sendJson(res, 200, {
+    ok: true,
+    adaptiveThinking: {
+      enabled: isAdaptiveThinkingEnabled(),
+      configWrite: shouldWriteAdaptiveReasoningConfig(),
+    },
+    selection,
+  });
 }
 
 async function handleStatus(_req, res) {
@@ -1684,6 +1902,12 @@ async function proxyChat(req, res) {
   const messages = normalizeMessages(body.messages);
   if (messages.length === 0) return sendError(res, 400, "At least one message is required");
 
+  const reasoningSelection = selectAdaptiveReasoningEffort(
+    messages,
+    body.reasoning_effort || body.reasoningEffort || body.thinking_level || body.thinkingLevel || "",
+  );
+  const reasoningPayload = reasoningPayloadForEffort(reasoningSelection.effort);
+
   const backend = body.backend === "ollama" ? "ollama" : DEFAULT_BACKEND;
   const requestedBackend = body.backend === "openrouter" ? "openrouter" : backend;
   if (requestedBackend === "openrouter") {
@@ -1717,6 +1941,11 @@ async function proxyChat(req, res) {
   if (requestedBackend === "hermes") {
     const key = await getApiKey();
     if (!key) return sendError(res, 500, "Missing API_SERVER_KEY in ~/.hermes/.env");
+    try {
+      await applyAdaptiveReasoningConfig(reasoningSelection);
+    } catch (err) {
+      console.warn("adaptive-thinking: could not update Hermes config", err?.message || err);
+    }
     return proxyStreamingRequest(
       req,
       res,
@@ -1725,8 +1954,10 @@ async function proxyChat(req, res) {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
         Accept: "text/event-stream",
+        "X-Hermes-Reasoning-Effort": reasoningSelection.effort,
+        "X-Cartha-Adaptive-Thinking": `${reasoningSelection.source}; ${reasoningSelection.reason}`.slice(0, 220),
       },
-      { model: HERMES_MODEL, messages, stream: true },
+      { model: HERMES_MODEL, messages, stream: true, ...reasoningPayload },
     );
   }
 
@@ -1750,7 +1981,7 @@ async function proxyChat(req, res) {
       stream: true,
       temperature: 0.2,
       max_tokens: 4096,
-      reasoning_effort: "none",
+      ...reasoningPayload,
     },
   );
 }
@@ -1759,6 +1990,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || `${HOST}:${PORT}`}`);
     if (req.method === "GET" && url.pathname === "/api/status") return handleStatus(req, res);
+    if (req.method === "POST" && url.pathname === "/api/adaptive-thinking/preview") return handleAdaptiveThinkingPreview(req, res);
     if (req.method === "GET" && url.pathname === "/api/sessions") return handleHermesSessions(req, res);
     if (req.method === "GET" && url.pathname === "/api/wake-status") return handleWakeStatus(req, res);
     if (req.method === "GET" && url.pathname === "/api/testflight/proposals") return handleTestFlightProposals(req, res);
