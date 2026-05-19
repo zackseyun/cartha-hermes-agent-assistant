@@ -29,8 +29,9 @@ cat > "$PLIST" <<PLIST
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/open</string>
-    <string>-a</string>
     <string>$APP_BUNDLE</string>
+    <string>--args</string>
+    <string>--bubble-only</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>$HOME/.hermes/logs/hermes-native.log</string>
@@ -42,9 +43,16 @@ PLIST
 uid="$(id -u)"
 launchctl bootout "gui/$uid/$LABEL" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$uid" "$PLIST"
-# If an older repo-local build is already running, stop it so macOS opens the
-# installed /Applications bundle instead of re-activating the previous process.
-pkill -x CarthaHermesNative >/dev/null 2>&1 || true
-launchctl kickstart -k "gui/$uid/$LABEL" >/dev/null 2>&1 || true
-open -a "$APP_BUNDLE"
+# Bootstrap may RunAtLoad the quiet login bubble immediately. Stop any old
+# instance, then open the app manually so the full panel is visible right now.
+for _ in 1 2 3 4 5; do
+  while IFS= read -r pid; do
+    command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    if [[ "$command" == *"Cartha Hermes.app/Contents/MacOS/CarthaHermesNative"* ]]; then
+      kill "$pid" >/dev/null 2>&1 || true
+    fi
+  done < <(pgrep -x CarthaHermesNative || true)
+  sleep 0.3
+done
+/usr/bin/open "$APP_BUNDLE"
 echo "Installed and opened $APP_BUNDLE"

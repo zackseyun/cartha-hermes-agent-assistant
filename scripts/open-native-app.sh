@@ -5,5 +5,5 @@ APP_BUNDLE="/Applications/Cartha Hermes.app"
 if [[ ! -x "$APP_BUNDLE/Contents/MacOS/CarthaHermesNative" ]]; then
   "$ROOT/scripts/install-native-launch-agent.sh"
 else
-  open -a "$APP_BUNDLE" || open "http://127.0.0.1:5128"
+  /usr/bin/open "$APP_BUNDLE" || open "http://127.0.0.1:5128"
 fi

@@ -14,3 +14,5 @@ logs/
 coverage/
 dist/
 .build/
+
+native/assets/*.iconset/

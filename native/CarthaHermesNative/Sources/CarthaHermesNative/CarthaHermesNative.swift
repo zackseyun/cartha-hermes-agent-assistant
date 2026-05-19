@@ -4,6 +4,28 @@ import Foundation
 import SwiftUI
 import WebKit
 
+enum NativeLog {
+    static private var url: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".hermes/logs/hermes-native-app.log")
+    }
+
+    static func write(_ message: String) {
+        let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        let directory = url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: url.path),
+           let handle = try? FileHandle(forWritingTo: url) {
+            _ = try? handle.seekToEnd()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+}
+
 // MARK: - Models
 
 struct HermesStatus: Decodable {
@@ -76,6 +98,14 @@ struct ChatMessage: Identifiable, Equatable {
     var content: String
 }
 
+enum NativeTab: String, Hashable {
+    case operatorChat
+    case workspace
+    case approvals
+    case sessions
+    case wake
+}
+
 struct WireMessage: Encodable {
     let role: String
     let content: String
@@ -101,6 +131,7 @@ final class HermesService: ObservableObject {
     @Published var sessions: [HermesSession] = []
     @Published var sessionCount = 0
     @Published var activeSessionCount = 0
+    @Published var selectedTab: NativeTab = .operatorChat
     @Published var messages: [ChatMessage] = [
         ChatMessage(role: "system", content: "Cartha Hermes native shell is ready. This window talks to the local Hermes stack and keeps the Swift bubble as the primary surface.")
     ]
@@ -643,17 +674,22 @@ struct MainPanelView: View {
     @ObservedObject var service: HermesService
 
     var body: some View {
-        TabView {
+        TabView(selection: $service.selectedTab) {
             OperatorView(service: service)
                 .tabItem { Label("Operator", systemImage: "sparkles") }
+                .tag(NativeTab.operatorChat)
             WorkspaceWebView(url: service.workspaceURL)
                 .tabItem { Label("Workspace", systemImage: "rectangle.3.group") }
+                .tag(NativeTab.workspace)
             ApprovalsView(service: service)
                 .tabItem { Label("Approvals", systemImage: "checkmark.seal") }
+                .tag(NativeTab.approvals)
             SessionsView(service: service)
                 .tabItem { Label("Sessions", systemImage: "clock.arrow.circlepath") }
+                .tag(NativeTab.sessions)
             WakeView(service: service)
                 .tabItem { Label("Wake", systemImage: "waveform") }
+                .tag(NativeTab.wake)
         }
         .frame(minWidth: 900, minHeight: 620)
     }
@@ -716,12 +752,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var bubble: NativeBubbleController?
     private var mainWindow: NSWindow?
 
+    private var bubbleOnlyLaunch: Bool {
+        CommandLine.arguments.contains("--bubble-only") || CommandLine.arguments.contains("--login-item")
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        // Manual launches from /Applications should visibly open the Mac app.
+        // Login/LaunchAgent starts pass --bubble-only and stay out of the Dock.
+        NSApp.setActivationPolicy(bubbleOnlyLaunch ? .accessory : .regular)
+        NativeLog.write("launch mode=\(bubbleOnlyLaunch ? "bubble-only" : "visible") args=\(CommandLine.arguments.joined(separator: " "))")
         buildMenuBar()
         bubble = NativeBubbleController(service: service) { [weak self] in self?.showMainWindow() }
         bubble?.show()
+        if !bubbleOnlyLaunch {
+            showMainWindow()
+        }
         Task { await service.refreshAll() }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            handleDeepLink(url)
+        }
+    }
+
+    private func handleDeepLink(_ url: URL) {
+        let command = (url.host?.isEmpty == false ? url.host : url.pathComponents.dropFirst().first) ?? "panel"
+        NativeLog.write("deep-link command=\(command) url=\(url.absoluteString)")
+        switch command.lowercased() {
+        case "bubble":
+            bubble?.show()
+        case "workspace":
+            service.selectedTab = .workspace
+            showMainWindow()
+        case "approvals", "approval":
+            service.selectedTab = .approvals
+            showMainWindow()
+        case "sessions", "session":
+            service.selectedTab = .sessions
+            showMainWindow()
+        case "wake", "voice":
+            service.selectedTab = .wake
+            showMainWindow()
+        default:
+            service.selectedTab = .operatorChat
+            showMainWindow()
+        }
     }
 
     private func buildMenuBar() {
@@ -742,15 +818,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = item
     }
 
-    @objc private func showMainWindowMenu() { showMainWindow() }
+    @objc private func showMainWindowMenu() {
+        service.selectedTab = .operatorChat
+        showMainWindow()
+    }
     @objc private func showBubbleMenu() { bubble?.show() }
     @objc private func refreshMenu() { Task { await service.refreshAll() } }
     @objc private func openWebFallbackMenu() { service.openWebConsole() }
     @objc private func openWorkspaceMenu() { service.openWorkspaceExternal() }
     @objc private func quit() { NSApp.terminate(nil) }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // If the login item is already running in bubble-only mode and the user
+        // opens the app from /Applications, promote it into a visible Mac app.
+        NSApp.setActivationPolicy(.regular)
+        NativeLog.write("reopen visibleWindows=\(flag)")
+        showMainWindow()
+        return true
+    }
+
     func showMainWindow() {
         if mainWindow == nil {
+            NativeLog.write("create-main-window")
             let content = MainPanelView(service: service)
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 680), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = "Cartha Hermes"
