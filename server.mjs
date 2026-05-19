@@ -39,6 +39,8 @@ const CARTHA_VOICE_LISTENER =
   process.env.CARTHA_VOICE_LISTENER || path.join(HOME, ".hermes", "scripts", "cartha-voice-listener.py");
 const CARTHA_WAKE_PROMPT = process.env.CARTHA_WAKE_PROMPT || "hey cartha";
 const CARTHA_WHISPER_PORT = process.env.CARTHA_WHISPER_PORT || "18187";
+const MAX_HISTORY_MESSAGES = Number.parseInt(process.env.HERMES_UI_MAX_HISTORY_MESSAGES || "80", 10);
+const MAX_HISTORY_MESSAGE_CHARS = Number.parseInt(process.env.HERMES_UI_MAX_HISTORY_MESSAGE_CHARS || "12000", 10);
 
 const CONTENT_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -204,6 +206,50 @@ function messageText(content) {
   return "";
 }
 
+function historyMessageText(content) {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (typeof part?.text === "string") return part.text;
+        if (typeof part?.content === "string") return part.content;
+        if (part?.type === "image_url") return "[image attachment]";
+        if (part?.type === "input_audio") return "[audio attachment]";
+        try {
+          return JSON.stringify(part);
+        } catch {
+          return "";
+        }
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+  if (content && typeof content === "object") {
+    try {
+      return JSON.stringify(content, null, 2);
+    } catch {
+      return String(content);
+    }
+  }
+  return String(content || "").trim();
+}
+
+function publicHistoryMessage(message, index) {
+  const raw = historyMessageText(message?.content ?? message?.text ?? message?.output ?? "");
+  const truncated = raw.length > MAX_HISTORY_MESSAGE_CHARS;
+  const content = truncated ? `${raw.slice(0, MAX_HISTORY_MESSAGE_CHARS).trim()}\n\n…truncated in cockpit view…` : raw;
+  return {
+    index,
+    role: typeof message?.role === "string" ? message.role : typeof message?.type === "string" ? message.type : "message",
+    content,
+    name: typeof message?.name === "string" ? message.name : "",
+    created_at: message?.created_at || message?.timestamp || null,
+    truncated,
+  };
+}
+
 function cleanSessionPreview(text) {
   return clampText(
     String(text || "")
@@ -284,6 +330,23 @@ async function readRecentSessions(limit = 36) {
     }
   }
   return sessions;
+}
+
+function safeSessionPath(value) {
+  if (!value) return "";
+  const root = path.resolve(HERMES_SESSIONS_DIR);
+  const candidate = path.isAbsolute(value) ? path.resolve(value) : path.resolve(root, value);
+  if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) return "";
+  return candidate;
+}
+
+async function readPublicSessionAtPath(filePath) {
+  const safePath = safeSessionPath(filePath);
+  if (!safePath) return null;
+  const stat = await fs.stat(safePath).catch(() => null);
+  if (!stat?.isFile?.()) return null;
+  const data = JSON.parse(await fs.readFile(safePath, "utf8"));
+  return publicHermesSession(safePath, stat, data);
 }
 
 async function readJsonlTail(filePath, limit = 8) {
@@ -497,6 +560,9 @@ function publicHarnessTask(task, status, index = 0) {
     createdAt,
     updatedAt,
     detail: clampText(String(task.detail || task.last_assistant || task.path || ""), 260),
+    sessionId: task.session_id || task.sessionId || "",
+    sessionFile: task.session_file || task.sessionFile || task.file || "",
+    sessionPath: task.session_path || task.sessionPath || task.path || "",
   };
 }
 
@@ -519,6 +585,10 @@ function sessionToHarnessTask(session, index = 0) {
       started_at: session.started_at,
       updated_at: session.updated_at,
       path: session.path,
+      file: session.file,
+      session_id: session.id,
+      session_file: session.file,
+      session_path: session.path,
     },
     status,
     index,
@@ -685,6 +755,146 @@ async function handleOperatorTasks(_req, res) {
     processedPath: HERMES_PROCESSED_REPLIES_PATH,
     tasks: await readHarnessTasks(48),
   });
+}
+
+function normalizedTaskNeedle(value) {
+  return String(value || "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLowerCase()
+    .slice(0, 120);
+}
+
+function findLikelySessionForTask(task, sessions) {
+  const needle = normalizedTaskNeedle(task?.summary || task?.title || "");
+  if (needle.length < 4) return null;
+  const taskTime = Date.parse(task?.updatedAt || task?.createdAt || "") || 0;
+  const matches = sessions
+    .map((session) => {
+      const haystack = normalizedTaskNeedle(`${session.title || ""} ${session.last_user || ""}`);
+      const direct = haystack.includes(needle) || needle.includes(haystack.slice(0, Math.min(haystack.length, 80)));
+      if (!direct) return null;
+      const sessionTime = Date.parse(session.updated_at || "") || Number(session.mtime_ms || 0) || 0;
+      const distance = taskTime && sessionTime ? Math.abs(taskTime - sessionTime) : 0;
+      return { session, distance };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.distance - b.distance);
+  return matches[0]?.session || null;
+}
+
+async function readSessionHistory(session) {
+  if (!session?.path) return { messages: [], omitted: 0 };
+  const data = JSON.parse(await fs.readFile(session.path, "utf8"));
+  const rawMessages = Array.isArray(data?.messages) ? data.messages : [];
+  const tail = rawMessages.slice(-Math.max(1, MAX_HISTORY_MESSAGES));
+  const messages = tail.map(publicHistoryMessage).filter((message) => message.content);
+  return {
+    messages,
+    omitted: Math.max(0, rawMessages.length - tail.length),
+  };
+}
+
+async function handleOperatorTaskHistory(_req, res, url) {
+  const id = String(url.searchParams.get("id") || "").trim();
+  if (!id) return sendError(res, 400, "Task id is required");
+
+  const tasks = await readHarnessTasks(120);
+  let task = tasks.find((item) => item.id === id || item.sessionId === id || item.sessionFile === id || item.sessionPath === id) || null;
+
+  let session = null;
+  const directCandidates = [
+    task?.sessionPath,
+    task?.sessionFile,
+    id.endsWith(".json") ? id : "",
+    id.startsWith("session_") || id.startsWith("session_api") || id.startsWith("session_cron") ? `${id.replace(/\.json$/u, "")}.json` : "",
+  ].filter(Boolean);
+  for (const candidate of directCandidates) {
+    session = await readPublicSessionAtPath(candidate).catch(() => null);
+    if (session) break;
+  }
+
+  let sessions = [];
+  if (!session) {
+    sessions = await readRecentSessions(200);
+    session =
+      sessions.find(
+        (item) =>
+          item.id === id ||
+          item.file === id ||
+          item.path === id ||
+          (task?.sessionId && item.id === task.sessionId) ||
+          (task?.sessionFile && item.file === task.sessionFile) ||
+          (task?.sessionPath && item.path === task.sessionPath),
+      ) || null;
+  }
+
+  if (!task && session) task = sessionToHarnessTask(session);
+  if (!session && task) {
+    if (sessions.length === 0) sessions = await readRecentSessions(80);
+    session = findLikelySessionForTask(task, sessions);
+  }
+
+  if (session) {
+    try {
+      const history = await readSessionHistory(session);
+      return sendJson(res, 200, {
+        ok: true,
+        task,
+        session,
+        messages: history.messages,
+        omitted: history.omitted,
+        note: history.omitted ? `Showing the latest ${history.messages.length} messages.` : "",
+      });
+    } catch (err) {
+      return sendJson(res, 200, {
+        ok: true,
+        task,
+        session,
+        messages: [
+          {
+            index: 0,
+            role: "system",
+            content: `Could not read linked session history: ${String(err?.message || err)}`,
+            name: "",
+            created_at: null,
+            truncated: false,
+          },
+        ],
+        omitted: 0,
+      });
+    }
+  }
+
+  if (task) {
+    return sendJson(res, 200, {
+      ok: true,
+      task,
+      session: null,
+      messages: [
+        {
+          index: 0,
+          role: "user",
+          content: task.summary || task.title || "Cartha task",
+          name: "",
+          created_at: task.createdAt || null,
+          truncated: false,
+        },
+        {
+          index: 1,
+          role: "system",
+          content:
+            "No Hermes session file is linked to this task yet. If it is still queued/running, the transcript will appear here after the agent writes its session file.",
+          name: "",
+          created_at: task.updatedAt || null,
+          truncated: false,
+        },
+      ],
+      omitted: 0,
+    });
+  }
+
+  return sendError(res, 404, "Task history was not found");
 }
 
 async function handleOperatorTools(_req, res) {
@@ -1095,6 +1305,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/wake-status") return handleWakeStatus(req, res);
     if (req.method === "GET" && url.pathname === "/api/testflight/proposals") return handleTestFlightProposals(req, res);
     if (req.method === "GET" && url.pathname === "/api/operator/overview") return handleOperatorOverview(req, res);
+    if (req.method === "GET" && url.pathname === "/api/operator/task-history") return handleOperatorTaskHistory(req, res, url);
     if (req.method === "GET" && url.pathname === "/api/operator/tasks") return handleOperatorTasks(req, res);
     if (req.method === "GET" && url.pathname === "/api/operator/tools") return handleOperatorTools(req, res);
     if (req.method === "POST" && url.pathname === "/api/operator/tasks") return handleOperatorTaskSubmit(req, res);

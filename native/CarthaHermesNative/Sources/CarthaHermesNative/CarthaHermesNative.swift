@@ -169,11 +169,43 @@ struct HarnessTask: Identifiable, Decodable {
     let createdAt: String?
     let updatedAt: String?
     let detail: String?
+    let sessionId: String?
+    let sessionFile: String?
+    let sessionPath: String?
 }
 
 struct TaskResponse: Decodable {
     let ok: Bool?
     let tasks: [HarnessTask]
+}
+
+struct TaskHistoryMessage: Identifiable, Decodable {
+    let index: Int
+    let role: String
+    let content: String
+    let name: String?
+    let createdAt: String?
+    let truncated: Bool?
+
+    var id: String { "\(index)-\(role)-\(name ?? "")" }
+
+    enum CodingKeys: String, CodingKey {
+        case index
+        case role
+        case content
+        case name
+        case createdAt = "created_at"
+        case truncated
+    }
+}
+
+struct TaskHistoryResponse: Decodable {
+    let ok: Bool?
+    let task: HarnessTask?
+    let session: HermesSession?
+    let messages: [TaskHistoryMessage]
+    let omitted: Int?
+    let note: String?
 }
 
 struct OperatorOverview: Decodable {
@@ -292,6 +324,10 @@ final class HermesService: ObservableObject {
     @Published var sessionCount = 0
     @Published var activeSessionCount = 0
     @Published var selectedTab: NativeTab = .now
+    @Published var selectedTaskForHistory: HarnessTask?
+    @Published var taskHistory: TaskHistoryResponse?
+    @Published var isLoadingTaskHistory = false
+    @Published var taskHistoryError: String?
     @Published var messages: [ChatMessage] = [
         ChatMessage(role: "system", content: "Cartha Operator is ready. Ask a quick question, or switch the composer to Run Task for durable agent work.")
     ]
@@ -399,6 +435,32 @@ final class HermesService: ObservableObject {
         } catch {
             lastError = "Tasks: \(error.localizedDescription)"
         }
+    }
+
+    func openTaskHistory(_ task: HarnessTask) async {
+        selectedTaskForHistory = task
+        taskHistory = nil
+        taskHistoryError = nil
+        isLoadingTaskHistory = true
+        defer { isLoadingTaskHistory = false }
+        do {
+            let response = try await getJSON(
+                TaskHistoryResponse.self,
+                url: endpoint("/api/operator/task-history", queryItems: [URLQueryItem(name: "id", value: task.id)])
+            )
+            taskHistory = response
+            taskHistoryError = nil
+        } catch {
+            taskHistoryError = error.localizedDescription
+            lastError = "Task history: \(error.localizedDescription)"
+        }
+    }
+
+    func clearTaskHistory() {
+        selectedTaskForHistory = nil
+        taskHistory = nil
+        taskHistoryError = nil
+        isLoadingTaskHistory = false
     }
 
     func send(_ text: String) async {
@@ -527,8 +589,18 @@ final class HermesService: ObservableObject {
         baseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
     }
 
+    private func endpoint(_ path: String, queryItems: [URLQueryItem]) -> URL {
+        var components = URLComponents(url: endpoint(path), resolvingAgainstBaseURL: false)!
+        components.queryItems = queryItems
+        return components.url ?? endpoint(path)
+    }
+
     private func getJSON<T: Decodable>(_ type: T.Type, path: String) async throws -> T {
-        let (data, response) = try await URLSession.shared.data(from: endpoint(path))
+        try await getJSON(type, url: endpoint(path))
+    }
+
+    private func getJSON<T: Decodable>(_ type: T.Type, url: URL) async throws -> T {
+        let (data, response) = try await URLSession.shared.data(from: url)
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
             let serverError = try? JSONDecoder().decode(ServerError.self, from: data)
             throw NSError(domain: "CarthaHermesNative", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: serverError?.detail ?? serverError?.error ?? "HTTP \(http.statusCode)"])
@@ -1182,6 +1254,12 @@ struct ContentPane: View {
             .transition(.opacity.combined(with: .scale(scale: 0.985, anchor: .top)).combined(with: .move(edge: .trailing)))
             .animation(.spring(response: 0.42, dampingFraction: 0.86), value: service.selectedTab)
         }
+        .sheet(item: $service.selectedTaskForHistory, onDismiss: {
+            service.clearTaskHistory()
+        }) { task in
+            TaskHistorySheet(service: service, task: task)
+                .frame(minWidth: 680, idealWidth: 760, minHeight: 560, idealHeight: 680)
+        }
     }
 }
 
@@ -1264,7 +1342,14 @@ struct NowView: View {
                                 EmptyState(icon: "tray", title: "No task ledger yet", detail: "Run a task from the Ask tab to start filling this in.")
                             } else {
                                 ForEach(service.tasks.prefix(5)) { task in
-                                    TaskRow(task: task)
+                                    Button {
+                                        OperatorSound.navigate()
+                                        Task { await service.openTaskHistory(task) }
+                                    } label: {
+                                        TaskRow(task: task, showsDisclosure: true)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("Open task history for \(task.summary ?? task.title ?? "Cartha task")")
                                 }
                             }
                         }
@@ -1495,7 +1580,14 @@ struct TasksView: View {
                     }
                 } else {
                     ForEach(service.tasks) { task in
-                        TaskCard(task: task)
+                        Button {
+                            OperatorSound.navigate()
+                            Task { await service.openTaskHistory(task) }
+                        } label: {
+                            TaskCard(task: task, showsDisclosure: true)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Open task history for \(task.summary ?? task.title ?? "Cartha task")")
                     }
                 }
             }
@@ -1507,6 +1599,7 @@ struct TasksView: View {
 
 struct TaskRow: View {
     let task: HarnessTask
+    var showsDisclosure = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -1519,12 +1612,21 @@ struct TaskRow: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
+            Spacer(minLength: 4)
+            if showsDisclosure {
+                Image(systemName: "chevron.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+            }
         }
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
     }
 }
 
 struct TaskCard: View {
     let task: HarnessTask
+    var showsDisclosure = false
 
     var body: some View {
         GlassCard {
@@ -1558,8 +1660,15 @@ struct TaskCard: View {
                             .lineLimit(3)
                     }
                 }
+                if showsDisclosure {
+                    Image(systemName: "chevron.right.circle.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(.secondary.opacity(0.72))
+                        .padding(.top, 2)
+                }
             }
         }
+        .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private var icon: String {
@@ -1570,6 +1679,200 @@ struct TaskCard: View {
         case "needs_approval": return "hand.raised"
         default: return "checkmark.circle"
         }
+    }
+}
+
+struct TaskHistorySheet: View {
+    @ObservedObject var service: HermesService
+    let task: HarnessTask
+
+    private var title: String {
+        service.taskHistory?.session?.title
+            ?? service.taskHistory?.task?.summary
+            ?? task.summary
+            ?? task.title
+            ?? "Cartha task"
+    }
+
+    private var taskStatus: String {
+        service.taskHistory?.task?.status ?? task.status ?? "unknown"
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "text.bubble.fill")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(.cyan)
+                    .frame(width: 42, height: 42)
+                    .background(.cyan.opacity(0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(title)
+                        .font(.system(size: 22, weight: .black, design: .rounded))
+                        .lineLimit(2)
+                    HStack(spacing: 8) {
+                        StatusPill(text: taskStatus, color: statusColor(taskStatus))
+                        Text(service.taskHistory?.session?.kind ?? task.mode ?? task.kind ?? "task")
+                        Text("·")
+                        Text(relativeTime(service.taskHistory?.session?.updated_at ?? task.updatedAt ?? task.createdAt))
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    OperatorSound.navigate()
+                    service.clearTaskHistory()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(22)
+
+            Divider().opacity(0.35)
+
+            Group {
+                if service.isLoadingTaskHistory {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Loading chat history…")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let error = service.taskHistoryError {
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.largeTitle)
+                            .foregroundStyle(.orange)
+                        Text("Could not open this task history")
+                            .font(.headline)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(30)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let history = service.taskHistory {
+                    TaskHistoryContent(service: service, history: history, fallbackTask: task)
+                } else {
+                    EmptyState(icon: "text.bubble", title: "No history loaded yet", detail: "Cartha is opening the matching session transcript.")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        }
+        .background(operatorBackground)
+    }
+}
+
+struct TaskHistoryContent: View {
+    @ObservedObject var service: HermesService
+    let history: TaskHistoryResponse
+    let fallbackTask: HarnessTask
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let note = history.note, !note.isEmpty {
+                Label(note, systemImage: "info.circle")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 14)
+            }
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    if history.messages.isEmpty {
+                        GlassCard {
+                            EmptyState(icon: "text.bubble", title: "No transcript yet", detail: "This task exists, but no chat messages have been written for it yet.")
+                        }
+                    } else {
+                        ForEach(history.messages) { message in
+                            TaskHistoryMessageBubble(message: message)
+                        }
+                    }
+                }
+                .padding(22)
+            }
+
+            Divider().opacity(0.35)
+            HStack {
+                Text(history.session?.path ?? fallbackTask.sessionPath ?? fallbackTask.detail ?? "Task history")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                if let path = history.session?.path ?? fallbackTask.sessionPath, !path.isEmpty {
+                    Button("Open JSON") {
+                        OperatorSound.navigate()
+                        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if let file = history.session?.file ?? fallbackTask.sessionFile, !file.isEmpty {
+                    Button("Open web session") {
+                        OperatorSound.navigate()
+                        var components = URLComponents(url: service.baseURL, resolvingAgainstBaseURL: false)
+                        components?.queryItems = [URLQueryItem(name: "session", value: file)]
+                        components?.fragment = "canvas"
+                        if let url = components?.url { NSWorkspace.shared.open(url) }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(16)
+            .background(.ultraThinMaterial)
+        }
+    }
+}
+
+struct TaskHistoryMessageBubble: View {
+    let message: TaskHistoryMessage
+
+    private var isUser: Bool { message.role == "user" }
+    private var label: String {
+        if let name = message.name, !name.isEmpty { return "\(message.role.uppercased()) · \(name)" }
+        return message.role.uppercased()
+    }
+
+    var body: some View {
+        HStack {
+            if isUser { Spacer(minLength: 54) }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(label)
+                    .font(.caption2.weight(.black))
+                    .foregroundStyle(.secondary)
+                Text(message.content)
+                    .font(.system(size: 13, weight: .medium))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                if message.truncated == true {
+                    Label("Long message clipped in cockpit view", systemImage: "scissors")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: 560, alignment: .leading)
+            .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.35)))
+            if !isUser { Spacer(minLength: 54) }
+        }
+    }
+
+    private var bubbleBackground: AnyShapeStyle {
+        if isUser {
+            return AnyShapeStyle(LinearGradient(colors: [.cyan.opacity(0.28), .mint.opacity(0.18)], startPoint: .topLeading, endPoint: .bottomTrailing))
+        }
+        if message.role == "tool" {
+            return AnyShapeStyle(Color.orange.opacity(0.10))
+        }
+        if message.role == "system" {
+            return AnyShapeStyle(Color.purple.opacity(0.12))
+        }
+        return AnyShapeStyle(Color.white.opacity(0.58))
     }
 }
 
