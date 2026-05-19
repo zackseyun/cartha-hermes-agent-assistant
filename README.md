@@ -66,7 +66,9 @@ Open:
 
 The Swift app is the default human-facing shell. It opens as a small non-focus-stealing bubble in the upper-right corner and includes a fuller native panel with:
 
+- Cartha Operator cockpit: Apple-like glass shell, animated aurora, sound/haptic polish, live dashboard, task ledger, tool readiness, sessions, approvals, and wake health.
 - Operator chat through the local Hermes API.
+- Two-mode composer: `Ask` for immediate streaming chat, `Run Task` for durable Cartha autonomy tasks.
 - Embedded Hermes Workspace bridge so the existing Workspace UI is available inside the app while it is ported to native Swift.
 - `Hey Cartha` wake listener status and controls.
 - Native Apple upload approval decisions.

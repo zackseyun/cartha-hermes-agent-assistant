@@ -26,10 +26,13 @@ const TESTFLIGHT_PROPOSALS_PATH =
 const CARTHA_GITHUB_REPO = process.env.CARTHA_GITHUB_REPO || "zackseyun/cartha.ai.mobile";
 const IOS_TESTFLIGHT_SH = process.env.CARTHA_IOS_TESTFLIGHT_SH || path.join(HOME, ".hermes", "scripts", "cartha-ios-testflight.sh");
 const HERMES_SESSIONS_DIR = process.env.HERMES_SESSIONS_DIR || path.join(HOME, ".hermes", "sessions");
+const HERMES_REPLIES_PATH = process.env.HERMES_REPLIES_PATH || path.join(HOME, ".hermes", "heartbeat-replies.jsonl");
 const HERMES_PROCESSED_REPLIES_PATH =
   process.env.HERMES_PROCESSED_REPLIES_PATH || path.join(HOME, ".hermes", "heartbeat-replies-processed.jsonl");
 const HERMES_HEARTBEAT_JOURNAL_PATH =
   process.env.HERMES_HEARTBEAT_JOURNAL_PATH || path.join(HOME, ".hermes", "heartbeat-journal.md");
+const HERMES_POLICY_PATH = process.env.HERMES_POLICY_PATH || path.join(HOME, ".hermes", "heartbeat-config", "policy.json");
+const HERMES_TASK_SH = process.env.HERMES_TASK_SH || path.join(HOME, ".hermes", "scripts", "hermes-task.sh");
 const CARTHA_VOICE_TOGGLE_SH =
   process.env.CARTHA_VOICE_TOGGLE_SH || path.join(HOME, ".hermes", "scripts", "cartha-voice-toggle.sh");
 const CARTHA_VOICE_LISTENER =
@@ -310,6 +313,15 @@ async function readTextTail(filePath, limit = 8) {
     .map((line) => clampText(line, 220));
 }
 
+async function fileExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function commandOk(command, args, options = {}) {
   try {
     await run(command, args, { timeout: 2_500, ...options });
@@ -460,6 +472,270 @@ async function handleTestFlightAction(req, res, id, action) {
   }
 }
 
+function taskStatusFromJournal(task, heartbeatLines = []) {
+  const reply = String(task.reply || task.text || task.title || "").trim();
+  const joined = heartbeatLines.join("\n").toLowerCase();
+  if (reply && joined.includes("[autonomy-blocked]") && joined.includes(reply.toLowerCase().slice(0, 80))) return "blocked";
+  if (joined.includes("needs_approval") || joined.includes("needs approval")) return "needs_approval";
+  return "completed";
+}
+
+function publicHarnessTask(task, status, index = 0) {
+  const id = String(task.id || `${status}-${task.ts || task.updated_at || index}`).replace(/\s+/gu, "-");
+  const title = clampText(String(task.title || task.mode || "Cartha Agent task"), 80);
+  const summary = clampText(String(task.reply || task.text || task.raw || task.last_user || task.last_assistant || ""), 220);
+  const createdAt = task.ts || task.started_at || task.updated_at || null;
+  const updatedAt = task.updated_at || task.ts || task.started_at || null;
+  return {
+    id: id || `${status}-${index}`,
+    title,
+    summary,
+    status,
+    source: task.source || task.platform || "cartha",
+    mode: task.mode || task.kind || "task",
+    kind: task.kind || "task",
+    createdAt,
+    updatedAt,
+    detail: clampText(String(task.detail || task.last_assistant || task.path || ""), 260),
+  };
+}
+
+function sessionToHarnessTask(session, index = 0) {
+  let status = "completed";
+  const assistant = String(session.last_assistant || "").trim();
+  const ageMs = Date.now() - Number(session.mtime_ms || 0);
+  if (!assistant && ageMs < 45 * 60 * 1000) status = "running";
+  if (!assistant && ageMs >= 45 * 60 * 1000) status = "blocked";
+  if (/needs[_\s-]?approval|approval required/iu.test(assistant)) status = "needs_approval";
+  return publicHarnessTask(
+    {
+      id: session.id,
+      title: session.title || "Hermes session",
+      reply: session.last_user || session.title || "",
+      last_assistant: assistant,
+      source: session.platform || "session",
+      mode: session.kind || "session",
+      kind: session.kind || "session",
+      started_at: session.started_at,
+      updated_at: session.updated_at,
+      path: session.path,
+    },
+    status,
+    index,
+  );
+}
+
+async function readHarnessTasks(limit = 36) {
+  const [queued, processed, sessions, heartbeatLines] = await Promise.all([
+    readJsonlTail(HERMES_REPLIES_PATH, 20),
+    readJsonlTail(HERMES_PROCESSED_REPLIES_PATH, 40),
+    readRecentSessions(24),
+    readTextTail(HERMES_HEARTBEAT_JOURNAL_PATH, 20),
+  ]);
+
+  const tasks = [];
+  queued.forEach((task, index) => tasks.push(publicHarnessTask(task, "queued", index)));
+  processed
+    .slice()
+    .reverse()
+    .forEach((task, index) => tasks.push(publicHarnessTask(task, taskStatusFromJournal(task, heartbeatLines), index)));
+  sessions.forEach((session, index) => {
+    if (session.kind === "api" || session.kind === "direct" || session.kind === "scheduled") {
+      tasks.push(sessionToHarnessTask(session, index));
+    }
+  });
+
+  const seen = new Set();
+  return tasks
+    .filter((task) => {
+      const key = `${task.id}:${task.status}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => Date.parse(b.updatedAt || b.createdAt || 0) - Date.parse(a.updatedAt || a.createdAt || 0))
+    .slice(0, limit);
+}
+
+async function readPolicySummary() {
+  const policy = await readJsonFile(HERMES_POLICY_PATH, {});
+  const trusted = policy?.trusted_autonomy || {};
+  const note = trusted._note || "Standing authorization allows routine local work inside approved roots while destructive operations still require approval.";
+  return {
+    enabled: trusted.enabled === true,
+    phase: String(policy?.phase || "local-first"),
+    maxSteps: Number(trusted.max_steps || trusted.maxSteps || 0) || null,
+    maxTotalSeconds: Number(trusted.max_total_seconds || trusted.maxTotalSeconds || 0) || null,
+    allowedRoots: Array.isArray(trusted.allowed_roots) ? trusted.allowed_roots.slice(0, 8) : [],
+    note,
+    approvals: [
+      "Secrets, sudo, broad deletes, force-pushes, package publishing, store submissions, cloud mutation, and destructive DB ops remain gated.",
+      "Apple upload lanes stay approval-driven; direct-download Mac publishing is unchanged.",
+    ],
+  };
+}
+
+async function readToolCapabilities(statusPayload = null, wakePayload = null) {
+  const status = statusPayload || (await buildStatusPayload().catch(() => null));
+  const wake = wakePayload || (await buildWakePayload().catch(() => null));
+  const [agentBrowser, cuaDriver, taskScript] = await Promise.all([
+    commandOk("which", ["agent-browser"]),
+    commandOk("which", ["cua-driver"]),
+    fileExists(HERMES_TASK_SH),
+  ]);
+  return [
+    {
+      id: "gateway",
+      label: "Hermes gateway",
+      status: status?.hermesGateway === "online" ? "ready" : "check",
+      ready: status?.hermesGateway === "online",
+      icon: "network",
+      detail: status?.hermesGateway === "online" ? `${HERMES_API_BASE}` : `Gateway ${status?.hermesGateway || "unknown"}`,
+    },
+    {
+      id: "local_model",
+      label: "Local model",
+      status: status?.gemmaStatus === "ollama online" ? "ready" : "offline",
+      ready: status?.gemmaStatus === "ollama online",
+      icon: "cpu",
+      detail: status?.localAgentModel || status?.model || "Local model not detected",
+    },
+    {
+      id: "wake",
+      label: "Voice wake",
+      status: wake?.active ? "listening" : "muted",
+      ready: wake?.active === true,
+      icon: "waveform",
+      detail: wake?.active ? `“${wake.wakePrompt || CARTHA_WAKE_PROMPT}” listener is active` : "Manual and Alfred tasks still work",
+    },
+    {
+      id: "durable_tasks",
+      label: "Durable task queue",
+      status: taskScript ? "ready" : "missing",
+      ready: taskScript,
+      icon: "checklist",
+      detail: taskScript ? HERMES_TASK_SH : "hermes-task.sh is missing",
+    },
+    {
+      id: "browser",
+      label: "Browser automation",
+      status: agentBrowser ? "installed" : "not installed",
+      ready: agentBrowser,
+      icon: "globe",
+      detail: agentBrowser ? "agent-browser binary is available" : "Source support exists, but agent-browser is not installed on this Mac",
+    },
+    {
+      id: "computer_use",
+      label: "Native computer use",
+      status: cuaDriver ? "installed" : "not installed",
+      ready: cuaDriver,
+      icon: "cursorarrow.click",
+      detail: cuaDriver ? "cua-driver binary is available" : "Desktop control is intentionally shown as not ready until cua-driver is installed",
+    },
+  ];
+}
+
+async function buildOperatorOverview() {
+  const [status, wake, proposalStore, sessions, tasks, activeWorkPayload, policy] = await Promise.all([
+    buildStatusPayload().catch((err) => ({ ok: false, hermesGateway: "offline", lastError: String(err?.message || err) })),
+    buildWakePayload().catch((err) => ({ ok: false, active: false, toggleText: String(err?.message || err), guardrails: [] })),
+    readJsonFile(TESTFLIGHT_PROPOSALS_PATH, []),
+    readRecentSessions(12),
+    readHarnessTasks(24),
+    Promise.all([readJsonlTail(HERMES_PROCESSED_REPLIES_PATH, 8), readTextTail(HERMES_HEARTBEAT_JOURNAL_PATH, 8)]),
+    readPolicySummary(),
+  ]);
+  const proposals = Array.isArray(proposalStore) ? proposalStore.map(publicProposal) : [];
+  const pendingProposals = proposals.filter((proposal) => proposal.status === "pending");
+  const tools = await readToolCapabilities(status, wake);
+  return {
+    ok: status.ok !== false,
+    generatedAt: new Date().toISOString(),
+    status,
+    wake,
+    proposals,
+    sessions,
+    tasks,
+    tools,
+    policy,
+    activeWork: {
+      pendingAppleUploads: pendingProposals.length,
+      pendingAppleUploadLabels: pendingProposals.slice(0, 4).map((proposal) => `${proposal.channel_label || "Apple upload"} · ${proposal.short_sha || ""}`),
+      recentTasks: activeWorkPayload[0].map((task) => ({
+        id: task.id || "",
+        ts: task.ts || "",
+        source: task.source || "",
+        mode: task.mode || "",
+        title: task.title || "Cartha Agent task",
+        text: clampText(task.reply || task.raw || "", 180),
+      })),
+      heartbeatLines: activeWorkPayload[1],
+    },
+  };
+}
+
+async function handleOperatorOverview(_req, res) {
+  sendJson(res, 200, await buildOperatorOverview());
+}
+
+async function handleOperatorTasks(_req, res) {
+  sendJson(res, 200, {
+    ok: true,
+    path: HERMES_REPLIES_PATH,
+    processedPath: HERMES_PROCESSED_REPLIES_PATH,
+    tasks: await readHarnessTasks(48),
+  });
+}
+
+async function handleOperatorTools(_req, res) {
+  const [status, wake] = await Promise.all([buildStatusPayload().catch(() => null), buildWakePayload().catch(() => null)]);
+  sendJson(res, 200, {
+    ok: true,
+    tools: await readToolCapabilities(status, wake),
+    policy: await readPolicySummary(),
+  });
+}
+
+async function handleOperatorTaskSubmit(req, res) {
+  let body = {};
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendError(res, err.status || 400, err.message || "Invalid JSON body");
+  }
+  const task = String(body.task || body.prompt || "").trim();
+  if (!task) return sendError(res, 400, "Task text is required");
+  if (task.length > 8_000) return sendError(res, 413, "Task is too long");
+  if (!(await fileExists(HERMES_TASK_SH))) return sendError(res, 500, "Task queue script is missing", HERMES_TASK_SH);
+
+  const title = clampText(String(body.title || "Cartha Operator task"), 80);
+  const mode = clampText(String(body.mode || "task"), 32).replace(/[^\w.-]/gu, "_") || "task";
+  try {
+    const result = await run(HERMES_TASK_SH, [task], {
+      timeout: 10_000,
+      maxBuffer: 512 * 1024,
+      env: {
+        ...process.env,
+        CARTHA_TASK_SOURCE: "native-operator",
+        CARTHA_TASK_TITLE: title,
+        CARTHA_TASK_MODE: mode,
+        CARTHA_TASK_CONFIRM_PREFIX: "Cartha Operator queued:",
+      },
+    });
+    const queued = await readJsonlTail(HERMES_REPLIES_PATH, 1);
+    const publicTask = queued[0] ? publicHarnessTask(queued[0], "queued", 0) : null;
+    sendJson(res, 202, {
+      ok: true,
+      id: publicTask?.id || "",
+      status: "queued",
+      message: clampText((result.stdout || "Cartha Operator queued the task.").trim(), 220),
+      task: publicTask,
+    });
+  } catch (err) {
+    return sendError(res, 502, "Could not queue Cartha task", String(err?.stderr || err?.stdout || err?.message || err));
+  }
+}
+
 async function handleHermesSessions(_req, res) {
   const [sessions, recentTasks, heartbeatLines, proposals] = await Promise.all([
     readRecentSessions(48),
@@ -492,7 +768,7 @@ async function handleHermesSessions(_req, res) {
   });
 }
 
-async function handleWakeStatus(_req, res) {
+async function buildWakePayload() {
   const listenerRunning = await commandOk("pgrep", ["-f", CARTHA_VOICE_LISTENER]);
   const launchd = await run("launchctl", ["print", `gui/${process.getuid?.() || ""}/dev.cartha.voice`], { timeout: 2_500, maxBuffer: 256 * 1024 })
     .then((result) => result.stdout || "")
@@ -503,7 +779,7 @@ async function handleWakeStatus(_req, res) {
     .then((result) => (result.stdout || "").trim())
     .catch((err) => String(err?.stderr || err?.stdout || err?.message || err).trim());
 
-  sendJson(res, 200, {
+  return {
     ok: true,
     active: listenerRunning || launchdRunning,
     listenerRunning,
@@ -517,7 +793,11 @@ async function handleWakeStatus(_req, res) {
       "Alfred/URL/manual task submission stays available even when wake listening is muted.",
       "Destructive local autonomy still goes through the Hermes trusted-autonomy policy gates.",
     ],
-  });
+  };
+}
+
+async function handleWakeStatus(_req, res) {
+  sendJson(res, 200, await buildWakePayload());
 }
 
 async function serveStatic(_req, res, pathname) {
@@ -601,7 +881,7 @@ function messagesContainAttachments(messages) {
   return messages.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type !== "text"));
 }
 
-async function handleStatus(_req, res) {
+async function buildStatusPayload() {
   const startedAt = Date.now();
   const localAgentModel = await getHermesLocalModel();
   let hermesGateway = "unknown";
@@ -652,7 +932,7 @@ async function handleStatus(_req, res) {
   // credential and should not make the native Swift surface look broken.
   const stackHealthy = hermesGateway === "online" || gemmaStatus === "ollama online" || agentStatus === "online";
 
-  sendJson(res, stackHealthy ? 200 : 502, {
+  return {
     ok: stackHealthy,
     backend: DEFAULT_BACKEND,
     ollamaApiBase: OLLAMA_API_BASE,
@@ -670,7 +950,12 @@ async function handleStatus(_req, res) {
     latencyMs: Date.now() - startedAt,
     status: agentHttpStatus || (agentStatus === "online" ? 200 : 502),
     sample: agentSample,
-  });
+  };
+}
+
+async function handleStatus(_req, res) {
+  const payload = await buildStatusPayload();
+  sendJson(res, payload.ok ? 200 : 502, payload);
 }
 
 async function proxyStreamingRequest(req, res, upstreamUrl, headers, body) {
@@ -809,6 +1094,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/sessions") return handleHermesSessions(req, res);
     if (req.method === "GET" && url.pathname === "/api/wake-status") return handleWakeStatus(req, res);
     if (req.method === "GET" && url.pathname === "/api/testflight/proposals") return handleTestFlightProposals(req, res);
+    if (req.method === "GET" && url.pathname === "/api/operator/overview") return handleOperatorOverview(req, res);
+    if (req.method === "GET" && url.pathname === "/api/operator/tasks") return handleOperatorTasks(req, res);
+    if (req.method === "GET" && url.pathname === "/api/operator/tools") return handleOperatorTools(req, res);
+    if (req.method === "POST" && url.pathname === "/api/operator/tasks") return handleOperatorTaskSubmit(req, res);
     const testFlightAction = url.pathname.match(/^\/api\/testflight\/proposals\/([^/]+)\/(approve|skip)$/u);
     if (req.method === "POST" && testFlightAction) {
       return handleTestFlightAction(req, res, decodeURIComponent(testFlightAction[1]), testFlightAction[2]);

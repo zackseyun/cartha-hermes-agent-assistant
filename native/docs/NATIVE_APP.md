@@ -9,9 +9,16 @@ The native app is the new primary local surface for Hermes/Cartha.
 - **Local-first model status:** the panel reads `~/.hermes/config.yaml` and shows the primary local Hermes model separately from optional OpenRouter fallbacks.
 - **Swift bubble first:** launches as a non-focus-stealing top-right Swift bubble.
 - **Native operator panel:** chat interface that talks to the existing local Hermes API at `127.0.0.1:5128` / gateway `127.0.0.1:8642`.
+- **Cartha Operator cockpit:** native glassmorphic shell with animated aurora background, live status sweep, sound/haptic feedback, dashboard metrics, quick prompts, task ledger, approvals, sessions, and voice controls.
+- **Two-mode composer:** `Ask` streams an immediate Hermes answer; `Run Task` queues durable work through the Cartha task/autonomy path.
 - **Workspace bridge:** embeds the current Hermes Workspace (`127.0.0.1:3000`) inside the Mac app so we can progressively port capabilities to native Swift.
 - **Wake controls:** reads/toggles the existing `Hey Cartha` listener through `~/.hermes/scripts/cartha-voice-toggle.sh`.
 - **Apple upload approvals:** surfaces pending TestFlight/App Store proposals in a native tab; future prompts should use Swift bubbles by default.
+- **Operator API harness:** the local console now exposes native-friendly endpoints:
+  - `GET /api/operator/overview`
+  - `GET /api/operator/tasks`
+  - `POST /api/operator/tasks`
+  - `GET /api/operator/tools`
 
 Build, install, and open:
 
