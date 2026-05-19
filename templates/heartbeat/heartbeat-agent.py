@@ -1317,6 +1317,7 @@ def direct_user_task_items(items: list[dict]) -> list[dict]:
 def run_trusted_autonomy_task(item: dict, context_bundle: str) -> dict:
     task_text = _reply_text(item).strip()
     source = _reply_source(item) or str(item.get("mode") or "unknown")
+    runtime_task_id = str(item.get("runtime_task_id") or item.get("id") or "").strip()
     if not TRUSTED_AUTONOMY_SH.exists():
         return {
             "status": "blocked",
@@ -1334,6 +1335,7 @@ def run_trusted_autonomy_task(item: dict, context_bundle: str) -> dict:
                 "--task", task_text,
                 "--source", source,
                 "--context-file", str(context_path),
+                "--runtime-task-id", runtime_task_id,
             ],
             capture_output=True,
             text=True,

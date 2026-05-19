@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -33,6 +33,11 @@ const HERMES_HEARTBEAT_JOURNAL_PATH =
   process.env.HERMES_HEARTBEAT_JOURNAL_PATH || path.join(HOME, ".hermes", "heartbeat-journal.md");
 const HERMES_POLICY_PATH = process.env.HERMES_POLICY_PATH || path.join(HOME, ".hermes", "heartbeat-config", "policy.json");
 const HERMES_TASK_SH = process.env.HERMES_TASK_SH || path.join(HOME, ".hermes", "scripts", "hermes-task.sh");
+const HERMES_RUNTIME_DIR = process.env.HERMES_RUNTIME_DIR || path.join(HOME, ".hermes", "runtime");
+const HERMES_RUNTIME_TASK_STORE_MODULE =
+  process.env.HERMES_RUNTIME_TASK_STORE_MODULE || "./lib/runtime-task-store.mjs";
+const HERMES_RUNTIME_MIRROR_MODULE =
+  process.env.HERMES_RUNTIME_MIRROR_MODULE || "./lib/hermes-runtime-store.mjs";
 const HERMES_RESEARCH_DIR = process.env.HERMES_RESEARCH_DIR || path.join(HOME, ".hermes", "research-room");
 const HERMES_RESEARCH_RUNS_PATH =
   process.env.HERMES_RESEARCH_RUNS_PATH || path.join(HERMES_RESEARCH_DIR, "runs.json");
@@ -1226,6 +1231,381 @@ async function readHarnessTasks(limit = 36) {
     .slice(0, limit);
 }
 
+function parseCsvFilter(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function resolveLocalModuleSpecifier(specifier) {
+  if (/^(node:|file:|https?:)/u.test(specifier)) return specifier;
+  if (path.isAbsolute(specifier)) return pathToFileURL(specifier).href;
+  if (specifier.startsWith(".")) return new URL(specifier, import.meta.url).href;
+  return specifier;
+}
+
+async function importOptionalRuntimeModule(specifier) {
+  try {
+    return {
+      available: true,
+      module: await import(resolveLocalModuleSpecifier(specifier)),
+      specifier,
+      error: "",
+    };
+  } catch (err) {
+    return {
+      available: false,
+      module: null,
+      specifier,
+      error: String(err?.message || err),
+    };
+  }
+}
+
+let runtimeTaskStoreModulePromise = null;
+async function loadRuntimeTaskStoreModule() {
+  if (!runtimeTaskStoreModulePromise) {
+    runtimeTaskStoreModulePromise = importOptionalRuntimeModule(HERMES_RUNTIME_TASK_STORE_MODULE);
+  }
+  const loaded = await runtimeTaskStoreModulePromise;
+  if (!loaded.available) runtimeTaskStoreModulePromise = null;
+  return loaded;
+}
+
+let runtimeMirrorModulePromise = null;
+async function loadRuntimeMirrorModule() {
+  if (!runtimeMirrorModulePromise) {
+    runtimeMirrorModulePromise = importOptionalRuntimeModule(HERMES_RUNTIME_MIRROR_MODULE);
+  }
+  const loaded = await runtimeMirrorModulePromise;
+  if (!loaded.available) runtimeMirrorModulePromise = null;
+  return loaded;
+}
+
+function compactValue(value, max = 260) {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return clampText(value, max);
+  try {
+    return clampText(JSON.stringify(value), max);
+  } catch {
+    return clampText(String(value), max);
+  }
+}
+
+function publicDurableTask(task = {}, store = "runtime-task-store") {
+  const id = String(task.id || task.task_id || task.taskId || "").trim();
+  const inputSummary = compactValue(task.input ?? task.task_text ?? task.text ?? task.prompt ?? "", 260);
+  const metadata = task.metadata && typeof task.metadata === "object" ? task.metadata : {};
+  const summary = clampText(
+    task.summary || task.reply || task.details || metadata.summary || inputSummary || task.title || "",
+    260,
+  );
+  const createdAt = task.created_at || task.createdAt || task.started_at || task.startedAt || null;
+  const updatedAt = task.updated_at || task.updatedAt || task.completed_at || task.completedAt || createdAt;
+  return {
+    id,
+    taskId: id,
+    title: clampText(task.title || metadata.title || inputSummary || "Durable Hermes task", 96),
+    summary,
+    status: String(task.status || task.final_status || "unknown"),
+    source: task.source || metadata.source || "cartha",
+    mode: task.mode || task.kind || metadata.mode || "task",
+    kind: "durable_task",
+    createdAt,
+    updatedAt,
+    startedAt: task.started_at || task.startedAt || null,
+    completedAt: task.completed_at || task.completedAt || task.final_at || task.finalAt || null,
+    finalStatus: task.final_status || task.finalStatus || null,
+    finalAt: task.final_at || task.finalAt || task.completed_at || task.completedAt || null,
+    detail: clampText(task.detail || task.details || metadata.detail || task.cwd || "", 500),
+    sessionId: task.session_id || task.sessionId || "",
+    sessionFile: task.session_file || task.sessionFile || "",
+    sessionPath: task.session_path || task.sessionPath || "",
+    runId: task.run_id || task.runId || metadata.run_id || "",
+    cwd: task.cwd || metadata.cwd || "",
+    eventCount: Number(task.event_count || task.eventCount || 0),
+    store,
+    durable: true,
+  };
+}
+
+function publicDurableEvent(event = {}, store = "runtime-task-store") {
+  const item = event.item && typeof event.item === "object" ? event.item : event.payload && typeof event.payload === "object" ? event.payload : {};
+  const summary = clampText(
+    event.summary ||
+      item.summary ||
+      item.message ||
+      item.text ||
+      item.output ||
+      item.command ||
+      compactValue(item, 320),
+    320,
+  );
+  return {
+    id: event.id || `${store}-${event.seq || 0}`,
+    seq: Number(event.seq || 0),
+    type: event.type || "runtime.event",
+    status: event.status || item.status || "",
+    title: clampText(event.title || item.title || item.tool || item.command || "", 120),
+    ts: event.created_at || event.createdAt || event.ts || event.timestamp || null,
+    taskId: event.task_id || event.taskId || "",
+    runId: event.run_id || event.runId || item.run_id || "",
+    itemId: event.item_id || event.itemId || item.item_id || "",
+    summary,
+    item,
+    store,
+  };
+}
+
+function sourcePayload(id, specifier, overrides = {}) {
+  return {
+    id,
+    module: specifier,
+    available: false,
+    mode: "stub",
+    note: "Waiting for the durable runtime store module; operator API is wired and will hydrate automatically when the module is present.",
+    ...overrides,
+  };
+}
+
+function filterDurableTasks(tasks, options = {}) {
+  const statuses = new Set(options.statuses || []);
+  const source = String(options.source || "");
+  const kind = String(options.kind || "");
+  return tasks.filter((task) => {
+    if (statuses.size && !statuses.has(task.status)) return false;
+    if (source && task.source !== source) return false;
+    if (kind && task.mode !== kind && task.kind !== kind) return false;
+    return true;
+  });
+}
+
+async function readRuntimeTaskStoreTasks(options = {}) {
+  const loaded = await loadRuntimeTaskStoreModule();
+  if (!loaded.available) {
+    return {
+      source: sourcePayload("runtime-task-store", HERMES_RUNTIME_TASK_STORE_MODULE, { error: loaded.error }),
+      tasks: [],
+    };
+  }
+  if (typeof loaded.module?.createRuntimeTaskStore !== "function") {
+    return {
+      source: sourcePayload("runtime-task-store", HERMES_RUNTIME_TASK_STORE_MODULE, {
+        mode: "invalid",
+        note: "Runtime task store module loaded, but createRuntimeTaskStore() is not exported yet.",
+      }),
+      tasks: [],
+    };
+  }
+  try {
+    const store = loaded.module.createRuntimeTaskStore();
+    const listOptions = {
+      limit: Math.max(Number(options.limit || 48), 1),
+      statuses: options.statuses?.length ? options.statuses : undefined,
+      source: options.source || undefined,
+      kind: options.kind || undefined,
+      order: options.order || "desc",
+    };
+    if (loaded.module?.DEFAULT_RUNTIME_TASK_STORE_DIR === HERMES_RUNTIME_DIR || loaded.module?.DEFAULT_RUNTIME_DIR === HERMES_RUNTIME_DIR) {
+      listOptions.includeMirrors = false;
+    }
+    const tasks = await store.listTasks({
+      ...listOptions,
+    });
+    return {
+      source: sourcePayload("runtime-task-store", HERMES_RUNTIME_TASK_STORE_MODULE, {
+        available: true,
+        mode: "task-store",
+        note: "Reading RuntimeTaskStore task summaries.",
+        rootDir: store.rootDir || "",
+      }),
+      tasks: tasks.map((task) => publicDurableTask(task, "runtime-task-store")),
+    };
+  } catch (err) {
+    return {
+      source: sourcePayload("runtime-task-store", HERMES_RUNTIME_TASK_STORE_MODULE, {
+        mode: "error",
+        note: "RuntimeTaskStore is present, but listTasks() failed.",
+        error: String(err?.message || err),
+      }),
+      tasks: [],
+    };
+  }
+}
+
+async function readRuntimeMirrorTasks(options = {}) {
+  const loaded = await loadRuntimeMirrorModule();
+  if (!loaded.available) {
+    return {
+      source: sourcePayload("runtime-mirror", HERMES_RUNTIME_MIRROR_MODULE, { error: loaded.error }),
+      tasks: [],
+    };
+  }
+  if (typeof loaded.module?.readRuntimeTasks !== "function") {
+    return {
+      source: sourcePayload("runtime-mirror", HERMES_RUNTIME_MIRROR_MODULE, {
+        mode: "invalid",
+        note: "Runtime mirror module loaded, but readRuntimeTasks() is not exported yet.",
+      }),
+      tasks: [],
+    };
+  }
+  try {
+    const runtimeDir = HERMES_RUNTIME_DIR || loaded.module.DEFAULT_RUNTIME_DIR;
+    const tasks = await loaded.module.readRuntimeTasks({ runtimeDir, limit: Math.max(Number(options.limit || 48), 1) });
+    return {
+      source: sourcePayload("runtime-mirror", HERMES_RUNTIME_MIRROR_MODULE, {
+        available: true,
+        mode: "json-mirror",
+        note: "Reading JSON mirror emitted by the durable Python runtime event bridge.",
+        rootDir: runtimeDir || "",
+      }),
+      tasks: filterDurableTasks(
+        tasks.map((task) => publicDurableTask(task, "runtime-mirror")),
+        options,
+      ),
+    };
+  } catch (err) {
+    return {
+      source: sourcePayload("runtime-mirror", HERMES_RUNTIME_MIRROR_MODULE, {
+        mode: "error",
+        note: "Runtime mirror module is present, but readRuntimeTasks() failed.",
+        error: String(err?.message || err),
+      }),
+      tasks: [],
+    };
+  }
+}
+
+async function readDurableRuntimeTasks(options = {}) {
+  const limit = Math.max(Number(options.limit || 48), 1);
+  const [storeResult, mirrorResult] = await Promise.all([
+    readRuntimeTaskStoreTasks({ ...options, limit: limit * 2 }),
+    readRuntimeMirrorTasks({ ...options, limit: limit * 2 }),
+  ]);
+  const seen = new Set();
+  const tasks = [];
+  for (const task of [...storeResult.tasks, ...mirrorResult.tasks]) {
+    if (!task.id || seen.has(task.id)) continue;
+    seen.add(task.id);
+    tasks.push(task);
+  }
+  tasks.sort((a, b) => Date.parse(b.updatedAt || b.createdAt || 0) - Date.parse(a.updatedAt || a.createdAt || 0));
+  const sources = [storeResult.source, mirrorResult.source];
+  return {
+    available: sources.some((source) => source.available),
+    sources,
+    tasks: tasks.slice(0, limit),
+  };
+}
+
+async function readRuntimeTaskStoreTimeline(taskId, options = {}) {
+  const loaded = await loadRuntimeTaskStoreModule();
+  const source = sourcePayload("runtime-task-store", HERMES_RUNTIME_TASK_STORE_MODULE, {
+    available: loaded.available,
+    mode: loaded.available ? "task-store" : "stub",
+    note: loaded.available
+      ? "Reading RuntimeTaskStore timeline."
+      : "Waiting for the durable runtime store module; operator API is wired and will hydrate automatically when the module is present.",
+    error: loaded.error || "",
+  });
+  if (!loaded.available || typeof loaded.module?.createRuntimeTaskStore !== "function") return { source, task: null, events: [] };
+  try {
+    const store = loaded.module.createRuntimeTaskStore();
+    source.rootDir = store.rootDir || "";
+    const timeline = await store.readTaskTimeline(taskId, {
+      sinceSeq: options.sinceSeq,
+      limit: Math.max(Number(options.limit || 200), 1),
+    });
+    return {
+      source,
+      task: publicDurableTask(timeline.task, "runtime-task-store"),
+      events: (timeline.events || []).map((event) => publicDurableEvent(event, "runtime-task-store")),
+    };
+  } catch (err) {
+    source.error = String(err?.message || err);
+    source.errorCode = err?.code || "";
+    return { source, task: null, events: [] };
+  }
+}
+
+async function readRuntimeMirrorTimeline(taskId, options = {}) {
+  const loaded = await loadRuntimeMirrorModule();
+  const source = sourcePayload("runtime-mirror", HERMES_RUNTIME_MIRROR_MODULE, {
+    available: loaded.available,
+    mode: loaded.available ? "json-mirror" : "stub",
+    note: loaded.available
+      ? "Reading JSON mirror timeline emitted by the durable Python runtime event bridge."
+      : "Waiting for runtime mirror module; operator API is wired and will hydrate automatically when the module is present.",
+    error: loaded.error || "",
+  });
+  if (!loaded.available || typeof loaded.module?.readRuntimeTaskTimeline !== "function") return { source, task: null, events: [] };
+  try {
+    const runtimeDir = HERMES_RUNTIME_DIR || loaded.module.DEFAULT_RUNTIME_DIR;
+    source.rootDir = runtimeDir || "";
+    const timeline = await loaded.module.readRuntimeTaskTimeline(taskId, {
+      runtimeDir,
+      limit: Math.max(Number(options.limit || 200), 1),
+    });
+    return {
+      source,
+      task: timeline.task ? publicDurableTask(timeline.task, "runtime-mirror") : null,
+      events: (timeline.events || [])
+        .filter((event) => Number(event.seq || 0) > Number(options.sinceSeq || 0))
+        .map((event) => publicDurableEvent(event, "runtime-mirror")),
+    };
+  } catch (err) {
+    source.error = String(err?.message || err);
+    source.errorCode = err?.code || "";
+    return { source, task: null, events: [] };
+  }
+}
+
+async function readDurableRuntimeTaskTimeline(taskId, options = {}) {
+  const preferred = options.store === "runtime-mirror" ? ["runtime-mirror", "runtime-task-store"] : ["runtime-task-store", "runtime-mirror"];
+  const results = [];
+  for (const store of preferred) {
+    const result =
+      store === "runtime-mirror"
+        ? await readRuntimeMirrorTimeline(taskId, options)
+        : await readRuntimeTaskStoreTimeline(taskId, options);
+    results.push(result);
+    if (result.task) {
+      return {
+        available: true,
+        sources: results.map((item) => item.source),
+        task: result.task,
+        events: result.events,
+      };
+    }
+  }
+  return {
+    available: results.some((item) => item.source.available),
+    sources: results.map((item) => item.source),
+    task: null,
+    events: [],
+  };
+}
+
+async function readOperatorTasks(options = {}) {
+  const limit = Math.max(Number(options.limit || 48), 1);
+  const [harnessTasks, durable] = await Promise.all([readHarnessTasks(limit), readDurableRuntimeTasks(options)]);
+  const combined = [...durable.tasks, ...harnessTasks]
+    .sort((a, b) => Date.parse(b.updatedAt || b.createdAt || 0) - Date.parse(a.updatedAt || a.createdAt || 0))
+    .slice(0, limit);
+  return {
+    durableStore: {
+      available: durable.available,
+      mode: durable.available ? "live" : "stub",
+      sources: durable.sources,
+    },
+    durableTasks: durable.tasks,
+    harnessTasks,
+    tasks: combined,
+  };
+}
+
 async function readPolicySummary() {
   const policy = await readJsonFile(HERMES_POLICY_PATH, {});
   const trusted = policy?.trusted_autonomy || {};
@@ -1316,12 +1696,12 @@ async function readToolCapabilities(statusPayload = null, wakePayload = null) {
 }
 
 async function buildOperatorOverview() {
-  const [status, wake, proposalStore, sessions, tasks, activeWorkPayload, policy] = await Promise.all([
+  const [status, wake, proposalStore, sessions, operatorTasks, activeWorkPayload, policy] = await Promise.all([
     buildStatusPayload().catch((err) => ({ ok: false, hermesGateway: "offline", lastError: String(err?.message || err) })),
     buildWakePayload().catch((err) => ({ ok: false, active: false, toggleText: String(err?.message || err), guardrails: [] })),
     readJsonFile(TESTFLIGHT_PROPOSALS_PATH, []),
     readRecentSessions(12),
-    readHarnessTasks(24),
+    readOperatorTasks({ limit: 24 }),
     Promise.all([readJsonlTail(HERMES_PROCESSED_REPLIES_PATH, 8), readTextTail(HERMES_HEARTBEAT_JOURNAL_PATH, 8)]),
     readPolicySummary(),
   ]);
@@ -1335,12 +1715,15 @@ async function buildOperatorOverview() {
     wake,
     proposals,
     sessions,
-    tasks,
+    tasks: operatorTasks.tasks,
+    durableTasks: operatorTasks.durableTasks,
+    durableStore: operatorTasks.durableStore,
     tools,
     policy,
     activeWork: {
       pendingAppleUploads: pendingProposals.length,
       pendingAppleUploadLabels: pendingProposals.slice(0, 4).map((proposal) => `${proposal.channel_label || "Apple upload"} · ${proposal.short_sha || ""}`),
+      durableTasks: operatorTasks.durableTasks.slice(0, 8),
       recentTasks: activeWorkPayload[0].map((task) => ({
         id: task.id || "",
         ts: task.ts || "",
@@ -1358,12 +1741,44 @@ async function handleOperatorOverview(_req, res) {
   sendJson(res, 200, await buildOperatorOverview());
 }
 
-async function handleOperatorTasks(_req, res) {
+async function handleOperatorTasks(_req, res, url) {
+  const statuses = parseCsvFilter(url.searchParams.get("status") || url.searchParams.get("statuses"));
+  const limit = clampNumber(url.searchParams.get("limit"), 1, 120, 48);
+  const payload = await readOperatorTasks({
+    limit,
+    statuses,
+    source: url.searchParams.get("source") || "",
+    kind: url.searchParams.get("kind") || "",
+  });
   sendJson(res, 200, {
     ok: true,
     path: HERMES_REPLIES_PATH,
     processedPath: HERMES_PROCESSED_REPLIES_PATH,
-    tasks: await readHarnessTasks(48),
+    ...payload,
+  });
+}
+
+async function handleOperatorTaskTimeline(_req, res, url, idFromPath = "") {
+  const id = String(idFromPath || url.searchParams.get("id") || "").trim();
+  if (!id) return sendError(res, 400, "Task id is required");
+  const result = await readDurableRuntimeTaskTimeline(id, {
+    store: url.searchParams.get("store") || "",
+    sinceSeq: clampNumber(url.searchParams.get("sinceSeq"), 0, Number.MAX_SAFE_INTEGER, 0),
+    limit: clampNumber(url.searchParams.get("limit"), 1, 500, 200),
+  });
+  if (!result.task) {
+    return sendError(
+      res,
+      result.available ? 404 : 501,
+      result.available ? "Durable task was not found" : "Durable task store is not available yet",
+      { sources: result.sources },
+    );
+  }
+  sendJson(res, 200, {
+    ok: true,
+    sources: result.sources,
+    task: result.task,
+    events: result.events,
   });
 }
 
@@ -1595,11 +2010,12 @@ async function handleResearchRunCreate(req, res) {
 }
 
 async function handleHermesSessions(_req, res) {
-  const [sessions, recentTasks, heartbeatLines, proposals] = await Promise.all([
+  const [sessions, recentTasks, heartbeatLines, proposals, durable] = await Promise.all([
     readRecentSessions(48),
     readJsonlTail(HERMES_PROCESSED_REPLIES_PATH, 8),
     readTextTail(HERMES_HEARTBEAT_JOURNAL_PATH, 8),
     readJsonFile(TESTFLIGHT_PROPOSALS_PATH, []),
+    readDurableRuntimeTasks({ limit: 8 }),
   ]);
   const pendingProposals = Array.isArray(proposals) ? proposals.filter((proposal) => proposal?.status === "pending") : [];
   const activeSessions = sessions.filter((session) => Date.now() - Number(session.mtime_ms || 0) < 3 * 60 * 60 * 1000);
@@ -1622,6 +2038,7 @@ async function handleHermesSessions(_req, res) {
         text: clampText(task.reply || task.raw || "", 180),
       })),
       heartbeatLines,
+      durableTasks: durable.tasks || [],
     },
   });
 }
@@ -1996,7 +2413,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/testflight/proposals") return handleTestFlightProposals(req, res);
     if (req.method === "GET" && url.pathname === "/api/operator/overview") return handleOperatorOverview(req, res);
     if (req.method === "GET" && url.pathname === "/api/operator/task-history") return handleOperatorTaskHistory(req, res, url);
-    if (req.method === "GET" && url.pathname === "/api/operator/tasks") return handleOperatorTasks(req, res);
+    if (req.method === "GET" && url.pathname === "/api/operator/tasks") return handleOperatorTasks(req, res, url);
+    if (req.method === "GET" && url.pathname === "/api/operator/task-timeline") return handleOperatorTaskTimeline(req, res, url);
+    const operatorTaskTimeline = url.pathname.match(/^\/api\/operator\/tasks\/([^/]+)\/timeline$/u);
+    if (req.method === "GET" && operatorTaskTimeline) {
+      return handleOperatorTaskTimeline(req, res, url, decodeURIComponent(operatorTaskTimeline[1]));
+    }
     if (req.method === "GET" && url.pathname === "/api/operator/tools") return handleOperatorTools(req, res);
     if (req.method === "POST" && url.pathname === "/api/operator/tasks") return handleOperatorTaskSubmit(req, res);
     if (req.method === "GET" && url.pathname === "/api/research/status") return handleResearchStatus(req, res);

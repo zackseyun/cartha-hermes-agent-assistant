@@ -166,6 +166,8 @@ The kit ships a 30-minute autonomous heartbeat that lives in `templates/heartbea
 
 - `heartbeat.sh` — collects recent activity, OpenClaw context, pending agent-sync jobs, and a system snapshot, then pipes the bundle into `heartbeat-agent.py`.
 - `heartbeat-agent.py` — local model (default: `qwen3.6:35b-hermes-256k` on Ollama) picks exactly one tool. Tools include `noop`, `journal_entry`, `notify_user`, `show_visual`, `notify_user_dialog`, `set_timer`, `mark_job_done`, `web_search`, `safe_shell_query`, `fetch_url`, `read_calendar_today`, `read_mail_recent`, `escalate`, `propose_quit_app`, `propose_cleanup`.
+- `hermes-task.sh` — Alfred/operator/voice task intake. It queues the old heartbeat reply and now creates the durable runtime task first.
+- `hermes-runtime-event.py` — durable task/event bridge. Alfred, voice, and operator tasks get a persistent `~/.hermes/runtime` task row plus append-only events so the cockpit can recover long-running work after pauses/restarts.
 - `heartbeat-cleanup.sh` — gated cleanup executor (empty trash, Xcode DerivedData, iOS simulator caches, etc.).
 - `heartbeat-config/policy.json` — phase + allowlist + denylist + cleanup actions + `trusted_autonomy` block for direct edit/test/build/git tasks in allowed roots.
 
@@ -178,6 +180,7 @@ cp templates/heartbeat/*.sh templates/heartbeat/*.py ~/.hermes/scripts/
 mkdir -p ~/.hermes/heartbeat-config
 cp templates/heartbeat-config/policy.json ~/.hermes/heartbeat-config/
 chmod +x ~/.hermes/scripts/heartbeat*.sh ~/.hermes/scripts/heartbeat-agent.py
+chmod +x ~/.hermes/scripts/hermes-runtime-event.py ~/.hermes/scripts/cartha-trusted-autonomy.py
 # Schedule via launchd or cron — see policy.json _comment for phase semantics.
 ```
 

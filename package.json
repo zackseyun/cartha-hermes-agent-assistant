@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "HERMES_UI_PORT=5128 node --watch server.mjs",
-    "check": "node --check server.mjs && node --check public/app.js && node --check scripts/*.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check lib/*.mjs && node --check scripts/*.mjs && node --test tests/*.test.mjs && node scripts/test-runtime-store.mjs",
     "smoke": "node scripts/smoke.mjs",
     "install:stack": "node scripts/install.mjs",
     "searxng:start": "bash templates/searxng/start-searxng.sh",
@@ -24,6 +24,7 @@
   },
   "files": [
     "server.mjs",
+    "lib",
     "public",
     "scripts",
     "templates",

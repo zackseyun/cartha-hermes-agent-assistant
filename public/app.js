@@ -26,6 +26,9 @@ const wakeStatusEl = document.querySelector("#wake-status");
 const wakeDetailEl = document.querySelector("#wake-detail");
 const wakeGuardrailsEl = document.querySelector("#wake-guardrails");
 const activeWorkList = document.querySelector("#active-work-list");
+const durableTaskStatus = document.querySelector("#durable-task-status");
+const durableTaskList = document.querySelector("#durable-task-list");
+const durableTaskTimeline = document.querySelector("#durable-task-timeline");
 const sessionList = document.querySelector("#session-list");
 const sessionDetail = document.querySelector("#session-detail");
 const refreshResearchButton = document.querySelector("#refresh-research");
@@ -344,6 +347,177 @@ function renderActiveWork(activeWork = {}) {
   }
 }
 
+function durableStatusLabel(status) {
+  if (status === "queued") return "Queued";
+  if (status === "running" || status === "in_progress" || status === "started") return "Running";
+  if (status === "needs_approval") return "Needs approval";
+  if (status === "blocked") return "Blocked";
+  if (status === "failed") return "Failed";
+  if (status === "cancelled") return "Cancelled";
+  if (status === "completed" || status === "succeeded") return "Completed";
+  return status || "Unknown";
+}
+
+function durableStatusClass(status) {
+  if (["completed", "succeeded"].includes(status)) return "is-complete";
+  if (["running", "in_progress", "started"].includes(status)) return "is-running";
+  if (["blocked", "failed", "needs_approval"].includes(status)) return "is-blocked";
+  return "is-queued";
+}
+
+function renderDurableTimeline(payload = {}) {
+  if (!durableTaskTimeline) return;
+  const task = payload.task || {};
+  durableTaskTimeline.classList.remove("hidden");
+  durableTaskTimeline.innerHTML = "";
+
+  const header = document.createElement("div");
+  header.className = "task-timeline-header";
+  const title = document.createElement("div");
+  title.className = "canvas-item-title";
+  title.textContent = task.title || task.id || "Durable task";
+  const meta = document.createElement("div");
+  meta.className = "muted";
+  meta.textContent = [
+    durableStatusLabel(task.status),
+    task.store || "",
+    task.eventCount ? `${task.eventCount} events` : "",
+    formatDateTime(task.updatedAt),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  header.append(title, meta);
+  durableTaskTimeline.appendChild(header);
+
+  const events = payload.events || [];
+  if (!events.length) {
+    const empty = document.createElement("div");
+    empty.className = "muted";
+    empty.textContent = "No timeline events yet. The task summary is durable; detailed events will appear as the runtime bridge writes them.";
+    durableTaskTimeline.appendChild(empty);
+    return;
+  }
+
+  for (const event of events.slice(-24)) {
+    const node = document.createElement("div");
+    node.className = "task-event";
+    const dot = document.createElement("span");
+    dot.className = `task-event-dot ${durableStatusClass(event.status || task.status)}`;
+    const body = document.createElement("div");
+    const eventTitle = document.createElement("div");
+    eventTitle.className = "task-event-title";
+    eventTitle.textContent = `${event.seq ? `#${event.seq} ` : ""}${event.type || "runtime.event"}${event.title ? ` · ${event.title}` : ""}`;
+    const detail = document.createElement("div");
+    detail.className = "muted";
+    detail.textContent = [formatDateTime(event.ts), event.status ? durableStatusLabel(event.status) : "", event.summary || ""]
+      .filter(Boolean)
+      .join(" — ");
+    body.append(eventTitle, detail);
+    node.append(dot, body);
+    durableTaskTimeline.appendChild(node);
+  }
+}
+
+async function loadDurableTimeline(task) {
+  if (!task?.id || !durableTaskTimeline) return;
+  durableTaskTimeline.classList.remove("hidden");
+  durableTaskTimeline.innerHTML = "";
+  const loading = document.createElement("div");
+  loading.className = "muted";
+  loading.textContent = `Loading timeline for ${task.title || task.id}…`;
+  durableTaskTimeline.appendChild(loading);
+  try {
+    const query = task.store ? `?store=${encodeURIComponent(task.store)}` : "";
+    const res = await fetch(`/api/operator/tasks/${encodeURIComponent(task.id)}/timeline${query}`);
+    const payload = await res.json();
+    if (!res.ok || !payload.ok) throw new Error(payload.detail?.sources?.[0]?.error || payload.detail || payload.error || `HTTP ${res.status}`);
+    renderDurableTimeline(payload);
+  } catch (err) {
+    durableTaskTimeline.innerHTML = "";
+    const error = document.createElement("div");
+    error.className = "task-timeline-error";
+    error.textContent = `Could not load task timeline: ${err.message || err}`;
+    durableTaskTimeline.appendChild(error);
+  }
+}
+
+function renderDurableTasks(payload = {}) {
+  if (!durableTaskList) return;
+  const durableStore = payload.durableStore || {};
+  const sources = durableStore.sources || [];
+  const liveSourceLabels = sources
+    .filter((source) => source.available)
+    .map((source) => `${source.id}${source.rootDir ? ` · ${source.rootDir}` : ""}`);
+  if (durableTaskStatus) {
+    durableTaskStatus.textContent = durableStore.available
+      ? `Live: ${liveSourceLabels.join(" / ") || "runtime store"}`
+      : "Waiting for the runtime store; endpoints are stubbed safely.";
+  }
+
+  const tasks = payload.durableTasks || [];
+  durableTaskList.innerHTML = "";
+  if (!tasks.length) {
+    durableTaskList.textContent = durableStore.available
+      ? "No durable runtime tasks yet."
+      : "No durable tasks yet. Once Hermes queues a task, this list will hydrate here.";
+    if (durableTaskTimeline) durableTaskTimeline.classList.add("hidden");
+    return;
+  }
+
+  for (const task of tasks.slice(0, 12)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "task-item";
+    const top = document.createElement("span");
+    top.className = "task-item-top";
+    const title = document.createElement("span");
+    title.className = "canvas-item-title";
+    title.textContent = task.title || task.id;
+    const badge = document.createElement("span");
+    badge.className = `task-status ${durableStatusClass(task.status)}`;
+    badge.textContent = durableStatusLabel(task.status);
+    top.append(title, badge);
+    const meta = document.createElement("span");
+    meta.className = "muted";
+    meta.textContent = [
+      task.source || "cartha",
+      task.mode || "task",
+      task.store || "",
+      task.eventCount ? `${task.eventCount} events` : "",
+      formatDateTime(task.updatedAt),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const summary = document.createElement("span");
+    summary.className = "task-summary";
+    summary.textContent = task.summary || task.detail || "No task summary yet.";
+    button.append(top, meta, summary);
+    button.addEventListener("click", () => {
+      document.querySelectorAll(".task-item").forEach((node) => node.classList.remove("is-selected"));
+      button.classList.add("is-selected");
+      void loadDurableTimeline(task);
+    });
+    durableTaskList.appendChild(button);
+  }
+
+  const first = tasks[0];
+  if (first) void loadDurableTimeline(first);
+}
+
+async function refreshDurableTasks() {
+  if (!durableTaskList) return;
+  durableTaskList.textContent = "Loading durable tasks…";
+  try {
+    const res = await fetch("/api/operator/tasks?limit=24");
+    const payload = await res.json();
+    if (!res.ok || !payload.ok) throw new Error(payload.detail || payload.error || `HTTP ${res.status}`);
+    renderDurableTasks(payload);
+  } catch (err) {
+    if (durableTaskStatus) durableTaskStatus.textContent = "Durable Task OS refresh failed.";
+    durableTaskList.textContent = `Could not load durable tasks: ${err.message || err}`;
+  }
+}
+
 function selectedResearchMode() {
   return document.querySelector('input[name="research-mode"]:checked')?.value || "quick";
 }
@@ -540,6 +714,7 @@ async function refreshCanvas() {
   if (wakeStatusEl) wakeStatusEl.textContent = "Checking wake listener…";
   if (activeWorkList) activeWorkList.textContent = "Loading current work…";
   if (sessionList) sessionList.textContent = "Loading sessions…";
+  void refreshDurableTasks();
   try {
     const [wakeRes, sessionsRes] = await Promise.all([fetch("/api/wake-status"), fetch("/api/sessions")]);
     const wake = await wakeRes.json();

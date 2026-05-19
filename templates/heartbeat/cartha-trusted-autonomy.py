@@ -40,6 +40,7 @@ POLICY_PATH = HERMES_HOME / "heartbeat-config" / "policy.json"
 ENV_FILE = HERMES_HOME / ".env"
 LOG_PATH = HERMES_HOME / "logs" / "cartha-autonomy.log"
 RUNS_DIR = HERMES_HOME / "autonomy-runs"
+RUNTIME_EVENT_PY = SCRIPT_DIR / "hermes-runtime-event.py"
 
 OLLAMA_URL = os.environ.get("CARTHA_AUTONOMY_OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -107,6 +108,80 @@ def emit_lifecycle_event(
         except Exception:
             pass
     return record
+
+
+def emit_runtime_event(
+    runtime_task_id: str,
+    event_type: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    status: str = "",
+    title: str = "",
+    run_id: str = "",
+    item_id: str = "",
+) -> None:
+    """Mirror autonomy lifecycle into the cross-run Hermes task ledger."""
+    task_id = str(runtime_task_id or "").strip()
+    if not task_id or not RUNTIME_EVENT_PY.exists():
+        return
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                str(RUNTIME_EVENT_PY),
+                "event",
+                "--task-id", task_id,
+                "--type", event_type,
+                "--status", status,
+                "--title", title[:220],
+                "--payload-json", json.dumps(payload or {}, ensure_ascii=False),
+                "--run-id", run_id,
+                "--item-id", item_id,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception as exc:
+        log(f"runtime event failed task_id={task_id} type={event_type}: {exc}")
+
+
+def finish_runtime_task(
+    runtime_task_id: str,
+    *,
+    status: str,
+    summary: str,
+    details: str,
+    next_steps: list[str],
+    artifact_path: Path,
+    run_id: str,
+) -> None:
+    task_id = str(runtime_task_id or "").strip()
+    if not task_id or not RUNTIME_EVENT_PY.exists():
+        return
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                str(RUNTIME_EVENT_PY),
+                "finish-task",
+                "--task-id", task_id,
+                "--status", status,
+                "--summary", summary[:1200],
+                "--details", details[:4000],
+                "--next-steps-json", json.dumps(next_steps[:8], ensure_ascii=False),
+                "--artifact-path", str(artifact_path),
+                "--run-id", run_id,
+                "--title", "Trusted Autonomy finished",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception as exc:
+        log(f"runtime finish failed task_id={task_id} run_id={run_id}: {exc}")
 
 
 def load_policy() -> dict[str, Any]:
@@ -466,7 +541,7 @@ def default_policy_cfg(policy: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any]) -> dict[str, Any]:
+def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any], runtime_task_id: str = "") -> dict[str, Any]:
     cfg = default_policy_cfg(policy)
     roots = allowed_roots_from_policy(policy)
     run_id = f"auto-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
@@ -478,6 +553,7 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any]) -
         "task": task,
         "source": source,
         "run_id": run_id,
+        "runtime_task_id": runtime_task_id,
     }]
     status = "blocked"
     summary = "Trusted Autonomy did not finish."
@@ -488,10 +564,17 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any]) -
     emit_lifecycle_event(run_id, "run_start", {
         "source": source,
         "task": task,
+        "runtime_task_id": runtime_task_id,
         "artifact_path": str(artifact_path),
         "events_path": str(events_path),
         "global_events_path": str(global_events_path),
     })
+    emit_runtime_event(runtime_task_id, "turn.started", {
+        "source": source,
+        "task": task,
+        "artifact_path": str(artifact_path),
+        "autonomy_events_path": str(events_path),
+    }, status="running", title="Trusted Autonomy started", run_id=run_id)
     try:
         for step in range(1, cfg["max_steps"] + 1):
             if time.time() - started > cfg["max_total_seconds"]:
@@ -517,12 +600,24 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any]) -
                 "action": action_name,
                 "planner": action,
             })
+            emit_runtime_event(runtime_task_id, "planner.action", {
+                "step": step,
+                "action": action_name,
+                "planner": action,
+            }, status="running", title=f"Planner chose {action_name or 'unknown'}", run_id=run_id, item_id=f"{run_id}:planner:{step}")
             if action_name == "respond":
                 status = str(action.get("status") or "completed")
                 summary = str(action.get("summary") or "(no summary)")[:1200]
                 details = str(action.get("details") or "")
                 raw_next = action.get("next_steps") or []
                 next_steps = raw_next if isinstance(raw_next, list) else [str(raw_next)]
+                emit_runtime_event(runtime_task_id, "agent.response", {
+                    "step": step,
+                    "status": status,
+                    "summary": summary,
+                    "details": details,
+                    "next_steps": next_steps,
+                }, status=status, title=summary, run_id=run_id, item_id=f"{run_id}:response:{step}")
                 break
 
             if action_name != "shell":
@@ -530,6 +625,11 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any]) -
                 summary = f"Trusted Autonomy returned an unsupported action: {action_name or '(empty)'}."
                 details = json.dumps(action)[:1200]
                 next_steps = ["Try again with a more concrete task."]
+                emit_runtime_event(runtime_task_id, "agent.blocked", {
+                    "step": step,
+                    "reason": "unsupported_action",
+                    "action": action,
+                }, status=status, title=summary, run_id=run_id, item_id=f"{run_id}:blocked:{step}")
                 break
 
             command = str(action.get("command") or "")
@@ -555,6 +655,13 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any]) -
                     "command": command,
                     "cwd": str(guard.cwd or cwd_raw),
                 })
+                emit_runtime_event(runtime_task_id, "guard.stopped", {
+                    "step": step,
+                    "decision": guard.decision,
+                    "reason": guard.reason,
+                    "command": command,
+                    "cwd": str(guard.cwd or cwd_raw),
+                }, status=guard.decision, title=guard.reason, run_id=run_id, item_id=f"{run_id}:guard:{step}")
                 break
 
             emit_lifecycle_event(run_id, "shell_start", {
@@ -564,6 +671,13 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any]) -
                 "timeout_seconds": timeout,
                 "reason": str(action.get("reason") or ""),
             })
+            emit_runtime_event(runtime_task_id, "command.started", {
+                "step": step,
+                "cwd": str(guard.cwd),
+                "command": command,
+                "timeout_seconds": timeout,
+                "reason": str(action.get("reason") or ""),
+            }, status="running", title=truncate(command, 160), run_id=run_id, item_id=f"{run_id}:command:{step}")
             result = run_shell(command, guard.cwd or SCRIPT_DIR, timeout)
             emit_lifecycle_event(run_id, "shell_end", {
                 "step": step,
@@ -575,6 +689,16 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any]) -
                 "stdout": truncate(str(result.get("stdout") or ""), 1000),
                 "stderr": truncate(str(result.get("stderr") or ""), 1000),
             })
+            emit_runtime_event(runtime_task_id, "command.completed" if result.get("ok") else "command.failed", {
+                "step": step,
+                "cwd": str(guard.cwd),
+                "command": command,
+                "ok": bool(result.get("ok")),
+                "returncode": result.get("returncode"),
+                "elapsed_seconds": result.get("elapsed_seconds"),
+                "stdout": truncate(str(result.get("stdout") or ""), 1000),
+                "stderr": truncate(str(result.get("stderr") or ""), 1000),
+            }, status="running", title=truncate(command, 160), run_id=run_id, item_id=f"{run_id}:command:{step}")
             observations.append({
                 "type": "shell_result",
                 "step": step,
@@ -610,6 +734,12 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any]) -
             "global_events_path": str(global_events_path),
             "status": status,
         })
+        emit_runtime_event(runtime_task_id, "artifact.written", {
+            "artifact_path": str(artifact_path),
+            "autonomy_events_path": str(events_path),
+            "global_autonomy_events_path": str(global_events_path),
+            "status": status,
+        }, status=status, title="Run artifact written", run_id=run_id, item_id=f"{run_id}:artifact")
         emit_lifecycle_event(run_id, "final_response", {
             "status": status,
             "summary": summary,
@@ -618,6 +748,15 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any]) -
             "artifact_path": str(artifact_path),
             "events_path": str(events_path),
         })
+        finish_runtime_task(
+            runtime_task_id,
+            status=status,
+            summary=summary,
+            details=details,
+            next_steps=next_steps,
+            artifact_path=artifact_path,
+            run_id=run_id,
+        )
         log(f"run end id={run_id} status={status} summary={summary!r}")
     return artifact
 
@@ -648,6 +787,7 @@ def main() -> int:
     parser.add_argument("--source", default="unknown")
     parser.add_argument("--context", default="")
     parser.add_argument("--context-file", default="")
+    parser.add_argument("--runtime-task-id", default="")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -668,7 +808,7 @@ def main() -> int:
             context = f"(could not read context file: {exc})"
 
     policy = load_policy()
-    result = run_autonomy(task, args.source, context, policy)
+    result = run_autonomy(task, args.source, context, policy, args.runtime_task_id)
     print(json.dumps(result))
     return 0 if result.get("status") in {"completed", "partial", "blocked", "needs_approval"} else 1
 
