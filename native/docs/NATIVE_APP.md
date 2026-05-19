@@ -8,17 +8,19 @@ The native app is the new primary local surface for Hermes/Cartha.
 - **Wake controls:** reads/toggles the existing `Hey Cartha` listener through `~/.hermes/scripts/cartha-voice-toggle.sh`.
 - **Apple upload approvals:** surfaces pending TestFlight/App Store proposals in a native tab; future prompts should use Swift bubbles by default.
 
-Build and open:
+Build, install, and open:
 
 ```bash
 ./scripts/build-native-app.sh
+./scripts/install-native-launch-agent.sh
 ./scripts/open-native-app.sh
 ```
 
-Output bundle:
+Bundle paths:
 
 ```text
-native/dist/Cartha Hermes.app
+native/dist/Cartha Hermes.app      # reproducible build output
+/Applications/Cartha Hermes.app    # installed user-facing app
 ```
 
-The old web console remains as a fallback only.
+The LaunchAgent opens `/Applications/Cartha Hermes.app`. The old web console remains as a fallback/API daemon only.
