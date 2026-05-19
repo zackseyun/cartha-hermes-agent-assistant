@@ -35,6 +35,7 @@ struct HermesStatus: Decodable {
     let agentStatus: String?
     let gemmaStatus: String?
     let model: String?
+    let localAgentModel: String?
     let agentModel: String?
     let smallModel: String?
     let hermesModel: String?
@@ -144,8 +145,9 @@ final class HermesService: ObservableObject {
     var gatewaySummary: String {
         let gateway = status?.hermesGateway ?? "unknown"
         let local = status?.gemmaStatus ?? "unknown"
-        let model = status?.model ?? "local model"
-        return "Hermes gateway \(gateway) · \(local) · \(model)"
+        let primary = status?.localAgentModel ?? status?.hermesModel ?? "local agent"
+        let vision = status?.model ?? "vision model"
+        return "Hermes gateway \(gateway) · primary \(primary) · \(local) · vision \(vision)"
     }
 
     var wakeSummary: String {

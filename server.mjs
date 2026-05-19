@@ -20,6 +20,7 @@ const OPENROUTER_SMALL_MODEL = process.env.OPENROUTER_SMALL_MODEL || "deepseek/d
 const DEFAULT_BACKEND = process.env.HERMES_UI_BACKEND || "hermes";
 const MAX_BODY_BYTES = Number.parseInt(process.env.HERMES_UI_MAX_BODY_BYTES || "32000000", 10);
 const HOME = process.env.HOME || "";
+const HERMES_CONFIG_PATH = process.env.HERMES_CONFIG_PATH || path.join(HOME, ".hermes", "config.yaml");
 const TESTFLIGHT_PROPOSALS_PATH =
   process.env.CARTHA_TESTFLIGHT_PROPOSALS_PATH || path.join(HOME, ".hermes", "cartha-testflight-proposals.json");
 const CARTHA_GITHUB_REPO = process.env.CARTHA_GITHUB_REPO || "zackseyun/cartha.ai.mobile";
@@ -94,6 +95,28 @@ async function getOpenRouterKey() {
     cachedOpenRouterKey = "";
   }
   return cachedOpenRouterKey;
+}
+
+let cachedHermesLocalModel = "";
+async function getHermesLocalModel() {
+  if (process.env.HERMES_LOCAL_MODEL) return process.env.HERMES_LOCAL_MODEL;
+  if (cachedHermesLocalModel) return cachedHermesLocalModel;
+  const raw = await fs.readFile(HERMES_CONFIG_PATH, "utf8").catch(() => "");
+  let inModelBlock = false;
+  for (const line of raw.split(/\r?\n/u)) {
+    if (/^model:\s*$/u.test(line)) {
+      inModelBlock = true;
+      continue;
+    }
+    if (inModelBlock && /^\S/u.test(line)) break;
+    const match = inModelBlock ? line.match(/^\s+default:\s*(.+?)\s*$/u) : null;
+    if (match) {
+      cachedHermesLocalModel = match[1].replace(/^['"]|['"]$/gu, "");
+      return cachedHermesLocalModel;
+    }
+  }
+  cachedHermesLocalModel = "qwen3.6:35b-hermes-256k";
+  return cachedHermesLocalModel;
 }
 
 async function getOpenRouterCreditRemaining(key) {
@@ -580,6 +603,7 @@ function messagesContainAttachments(messages) {
 
 async function handleStatus(_req, res) {
   const startedAt = Date.now();
+  const localAgentModel = await getHermesLocalModel();
   let hermesGateway = "unknown";
   try {
     const key = await getApiKey();
@@ -638,6 +662,7 @@ async function handleStatus(_req, res) {
     agentStatus,
     gemmaStatus,
     model: OLLAMA_MODEL,
+    localAgentModel,
     agentModel: OPENROUTER_AGENT_MODEL,
     smallModel: OPENROUTER_SMALL_MODEL,
     creditRemainingUsd,

@@ -260,15 +260,15 @@ async function refreshStatus() {
     if (Number.isFinite(credit) && credit <= 0) {
       setStatus(
         "warn",
-        "MiMo configured, credits exhausted",
-        `Agent ${data.agentModel} · Small ${data.smallModel} · Vision ${data.model}${creditText(credit)}`,
+        "Local Hermes online · fallback credits exhausted",
+        `Primary ${data.localAgentModel || data.hermesModel} · Fallback ${data.agentModel} · Vision ${data.model}${creditText(credit)}`,
       );
       return;
     }
     setStatus(
       "ok",
-      "Local harness online",
-      `Agent ${data.agentModel} · Small ${data.smallModel} · Vision ${data.model} · ${data.latencyMs}ms${creditText(credit)}`,
+      "Local Hermes online",
+      `Primary ${data.localAgentModel || data.hermesModel} · Fallback ${data.agentModel} · Vision ${data.model} · ${data.latencyMs}ms${creditText(credit)}`,
     );
   } catch (err) {
     setStatus("danger", "Local model offline", err.message || String(err));
