@@ -26,12 +26,19 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleExecutable</key><string>$EXEC_NAME</string>
   <key>CFBundleIdentifier</key><string>ai.cartha.hermes.native</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Cartha Hermes</string>
   <key>CFBundleDisplayName</key><string>Cartha Hermes</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleIconName</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleSupportedPlatforms</key>
+  <array>
+    <string>MacOSX</string>
+  </array>
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
@@ -44,11 +51,14 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
   </array>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>CFBundleVersion</key><string>1</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict>
 </plist>
 PLIST
+printf 'APPL????' > "$BUNDLE/Contents/PkgInfo"
 
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --deep --sign - "$BUNDLE" >/dev/null 2>&1 || true
