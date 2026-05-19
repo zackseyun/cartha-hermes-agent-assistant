@@ -36,6 +36,7 @@
         <div class="quick-actions">
           <button data-prompt="Use tools to inspect this Mac: show cwd, uptime/load, memory pressure, and top 5 CPU processes. Keep it concise.">System check</button>
           <button data-prompt="Use file/terminal tools to summarize the current GitHub workspace. List repos and identify likely active projects.">Workspace map</button>
+          <button data-research-prompt="latest robust open-source AI research/search agents for local Hermes integration">Research room</button>
           <button data-prompt="Use tools if helpful. Explain what this local Hermes harness can do from here, including its current working directory and available tool categories.">Harness overview</button>
         </div>
         <div class="companion-card">
@@ -108,6 +109,28 @@
         <section class="canvas-card">
           <div class="canvas-section-title">Active work</div>
           <div id="active-work-list" class="canvas-list muted">Loading current work…</div>
+        </section>
+
+        <section class="canvas-card research-card">
+          <div class="card-heading">
+            <div>
+              <div class="canvas-section-title">Research Room</div>
+              <div id="research-status" class="muted">Checking local search…</div>
+            </div>
+            <button id="refresh-research" class="ghost" type="button">Refresh</button>
+          </div>
+          <form id="research-form" class="research-form">
+            <textarea id="research-query" rows="3" placeholder="Ask a real research question…"></textarea>
+            <div class="research-controls">
+              <label class="inline-toggle"><input id="research-mode-quick" type="radio" name="research-mode" value="quick" checked /> Quick</label>
+              <label class="inline-toggle"><input id="research-mode-deep" type="radio" name="research-mode" value="deep" /> Deeper</label>
+              <button id="research-run" type="submit">Run research</button>
+            </div>
+          </form>
+          <div id="research-result" class="research-result muted">Search with SearXNG, read sources, then synthesize a cited answer.</div>
+          <div id="research-sources" class="research-sources"></div>
+          <div class="canvas-section-title research-history-title">Recent research</div>
+          <div id="research-history" class="research-history muted">No research runs loaded yet.</div>
         </section>
 
         <section class="canvas-card session-card">

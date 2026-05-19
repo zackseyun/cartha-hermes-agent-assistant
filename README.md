@@ -202,6 +202,32 @@ curl 'http://127.0.0.1:8888/search?q=test&format=json' | jq '.results | .[0]'
 
 The script seeds `~/.hermes/searxng/settings.yml` from `templates/searxng/settings.yml` on first run with a freshly-generated secret key. Re-runs are idempotent (restart existing container).
 
+## Research Room
+
+The console and native Swift app include a **Research Room** for Perplexity-style local research:
+
+- Search: local SearXNG at `127.0.0.1:8888`.
+- Reading: safe public HTTP/HTTPS page fetches with private/local URL blocking.
+- Synthesis: local Hermes/Ollama model first, optional OpenRouter fallback, and an extractive source brief if models time out.
+- History: runs are persisted in `~/.hermes/research-room/runs.json`.
+
+APIs:
+
+```bash
+curl -s http://127.0.0.1:5128/api/research/status | jq
+curl -s http://127.0.0.1:5128/api/research/runs | jq
+curl -s -X POST http://127.0.0.1:5128/api/research/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"best open-source Perplexity alternatives","mode":"quick"}' | jq
+```
+
+Useful env overrides:
+
+- `HERMES_RESEARCH_SEARXNG_URL` — search backend URL.
+- `HERMES_RESEARCH_MODEL` — local synthesis model override.
+- `HERMES_RESEARCH_CLOUD_FALLBACK=0` — strict local/extractive-only mode.
+- `HERMES_RESEARCH_MAX_RESULTS` / `HERMES_RESEARCH_MAX_FETCHES` — source breadth.
+
 ## Stand-up guide
 
 See [`docs/STANDUP.md`](docs/STANDUP.md) for a more detailed from-zero setup and [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for debugging auth, model, launchd, and OpenRouter credit issues.
@@ -216,6 +242,7 @@ This checkout also includes Zack's newer Cartha-facing operator console polish:
 
 - **Release gate card + modal** for Apple upload approvals.
 - **Cartha Canvas** companion panel for Alfred sessions, wake-listener state, active work, and recent Hermes sessions.
+- **Research Room** for local SearXNG search, safe source reading, cited synthesis, and saved research history.
 - **Wake listener health checks** for the `dev.cartha.voice` launchd path and local whisper server.
 - **Non-secret server-side routing** for Hermes/OpenRouter/Ollama requests; browser JS never receives provider keys.
 

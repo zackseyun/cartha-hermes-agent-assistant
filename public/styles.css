@@ -145,6 +145,43 @@ textarea:focus { border-color: rgba(139, 92, 246, 0.85); box-shadow: 0 0 0 4px r
 .session-detail { display: grid; gap: 8px; }
 .session-snippet { color: #cbd5e1; font-size: 12px; line-height: 1.45; }
 .session-path { font-size: 11px; overflow-wrap: anywhere; }
+.research-card { display: grid; gap: 12px; }
+.research-form { display: grid; gap: 10px; }
+.research-form textarea { min-height: 88px; }
+.research-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.research-controls button { margin-left: auto; padding: 9px 12px; border-radius: 12px; font-weight: 850; background: linear-gradient(135deg, rgba(139, 92, 246, 0.9), rgba(6, 182, 212, 0.86)); border-color: transparent; }
+.research-result {
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: #e5edff;
+  background: rgba(3, 7, 18, 0.34);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.research-result.is-error { color: #fecdd3; border-color: rgba(251, 113, 133, 0.4); background: rgba(251, 113, 133, 0.08); }
+.research-sources, .research-history { display: grid; gap: 8px; }
+.research-meta { font-size: 11px; }
+.research-source, .research-history-item {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  text-decoration: none;
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  padding: 10px;
+  background: rgba(3, 7, 18, 0.28);
+}
+.research-source:hover, .research-history-item:hover { border-color: rgba(6, 182, 212, 0.55); transform: translateY(-1px); }
+.research-source.is-muted { opacity: 0.78; }
+.research-source-title { color: #d8b4fe; font-weight: 900; font-size: 12.5px; line-height: 1.35; }
+.research-source-excerpt { color: #cbd5e1; font-size: 11.5px; line-height: 1.4; }
+.research-history-title { margin-top: 4px; }
+.research-history-item { width: 100%; }
 .topbar { padding: 22px 24px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .top-actions { display: flex; gap: 10px; }
 .messages { overflow: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }

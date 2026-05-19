@@ -33,6 +33,16 @@ const HERMES_HEARTBEAT_JOURNAL_PATH =
   process.env.HERMES_HEARTBEAT_JOURNAL_PATH || path.join(HOME, ".hermes", "heartbeat-journal.md");
 const HERMES_POLICY_PATH = process.env.HERMES_POLICY_PATH || path.join(HOME, ".hermes", "heartbeat-config", "policy.json");
 const HERMES_TASK_SH = process.env.HERMES_TASK_SH || path.join(HOME, ".hermes", "scripts", "hermes-task.sh");
+const HERMES_RESEARCH_DIR = process.env.HERMES_RESEARCH_DIR || path.join(HOME, ".hermes", "research-room");
+const HERMES_RESEARCH_RUNS_PATH =
+  process.env.HERMES_RESEARCH_RUNS_PATH || path.join(HERMES_RESEARCH_DIR, "runs.json");
+const HERMES_RESEARCH_SEARXNG_URL = (process.env.HERMES_RESEARCH_SEARXNG_URL || process.env.HEARTBEAT_SEARXNG_URL || "http://127.0.0.1:8888").replace(/\/+$/u, "");
+const HERMES_RESEARCH_MODEL = process.env.HERMES_RESEARCH_MODEL || "";
+const HERMES_RESEARCH_CLOUD_FALLBACK = process.env.HERMES_RESEARCH_CLOUD_FALLBACK !== "0";
+const HERMES_RESEARCH_MAX_RESULTS = Number.parseInt(process.env.HERMES_RESEARCH_MAX_RESULTS || "8", 10);
+const HERMES_RESEARCH_MAX_FETCHES = Number.parseInt(process.env.HERMES_RESEARCH_MAX_FETCHES || "5", 10);
+const HERMES_RESEARCH_FETCH_BYTES = Number.parseInt(process.env.HERMES_RESEARCH_FETCH_BYTES || "700000", 10);
+const HERMES_RESEARCH_MODEL_TIMEOUT_MS = Number.parseInt(process.env.HERMES_RESEARCH_MODEL_TIMEOUT_MS || "140000", 10);
 const CARTHA_VOICE_TOGGLE_SH =
   process.env.CARTHA_VOICE_TOGGLE_SH || path.join(HOME, ".hermes", "scripts", "cartha-voice-toggle.sh");
 const CARTHA_VOICE_LISTENER =
@@ -189,6 +199,405 @@ function clampText(value, max = 220) {
   const text = String(value || "").replace(/\s+/gu, " ").trim();
   if (text.length <= max) return text;
   return `${text.slice(0, Math.max(0, max - 1)).trim()}…`;
+}
+
+function clampNumber(value, min, max, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function slugifyResearchTitle(value) {
+  const slug = String(value || "research")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 54);
+  return slug || "research";
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&nbsp;/giu, " ")
+    .replace(/&amp;/giu, "&")
+    .replace(/&lt;/giu, "<")
+    .replace(/&gt;/giu, ">")
+    .replace(/&quot;/giu, '"')
+    .replace(/&#39;/giu, "'")
+    .replace(/&#x([0-9a-f]+);/giu, (_match, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/gu, (_match, num) => String.fromCodePoint(Number.parseInt(num, 10)));
+}
+
+function htmlToResearchText(html) {
+  return decodeHtmlEntities(
+    String(html || "")
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/giu, " ")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/giu, " ")
+      .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/giu, " ")
+      .replace(/<!--[\s\S]*?-->/gu, " ")
+      .replace(/<(?:br|\/p|\/div|\/li|\/h[1-6]|\/section|\/article|\/tr)\b[^>]*>/giu, "\n")
+      .replace(/<[^>]+>/gu, " "),
+  )
+    .replace(/\u0000/gu, "")
+    .replace(/[ \t\f\v]+/gu, " ")
+    .replace(/\n\s+/gu, "\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
+function isPrivateResearchHostname(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  if (!host || host === "localhost" || host.endsWith(".local")) return true;
+  if (/^(?:0|10|127)\./u.test(host)) return true;
+  if (/^169\.254\./u.test(host)) return true;
+  if (/^192\.168\./u.test(host)) return true;
+  if (/^172\.(?:1[6-9]|2\d|3[01])\./u.test(host)) return true;
+  if (host === "::1" || host === "[::1]" || host.startsWith("fc") || host.startsWith("fd")) return true;
+  return false;
+}
+
+function isResearchUrlAllowed(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (!["http:", "https:"].includes(url.protocol)) return false;
+    if (isPrivateResearchHostname(url.hostname)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readResponseTextLimited(response, maxBytes = HERMES_RESEARCH_FETCH_BYTES) {
+  const reader = response.body?.getReader?.();
+  if (!reader) return "";
+  const chunks = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = Buffer.from(value);
+    const remaining = maxBytes - size;
+    if (remaining <= 0) break;
+    chunks.push(chunk.length > remaining ? chunk.subarray(0, remaining) : chunk);
+    size += Math.min(chunk.length, remaining);
+    if (size >= maxBytes) break;
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function searxngSearch(query, maxResults = HERMES_RESEARCH_MAX_RESULTS) {
+  const url = new URL(`${HERMES_RESEARCH_SEARXNG_URL}/search`);
+  url.searchParams.set("q", query);
+  url.searchParams.set("format", "json");
+  url.searchParams.set("safesearch", "0");
+  const response = await fetch(url, {
+    headers: { Accept: "application/json", "User-Agent": "CarthaResearchRoom/1.0" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`SearXNG HTTP ${response.status}`);
+  const payload = await response.json();
+  return (payload.results || [])
+    .map((result, index) => ({
+      id: `S${index + 1}`,
+      title: clampText(result.title || result.url || "Untitled result", 180),
+      url: String(result.url || ""),
+      snippet: clampText(result.content || result.snippet || "", 420),
+      engine: Array.isArray(result.engines) ? result.engines.join(", ") : String(result.engine || ""),
+      score: Number(result.score || 0),
+      position: index + 1,
+      publishedDate: result.publishedDate || null,
+    }))
+    .filter((result) => result.url)
+    .slice(0, maxResults);
+}
+
+function queryTerms(query) {
+  return new Set(
+    String(query || "")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/u)
+      .filter((term) => term.length > 2 && !["the", "and", "for", "with", "from", "what", "how", "why", "are"].includes(term)),
+  );
+}
+
+function scoreResearchSource(source, terms) {
+  const haystack = `${source.title || ""} ${source.snippet || ""} ${source.text || ""}`.toLowerCase();
+  let hits = 0;
+  for (const term of terms) {
+    if (haystack.includes(term)) hits += 1;
+  }
+  const textBonus = Math.min(2, Math.max(0, (source.textLength || 0) / 15_000));
+  return Number(source.score || 0) + hits * 2 + textBonus;
+}
+
+async function fetchResearchSource(result, maxTextChars = 12_000) {
+  if (!isResearchUrlAllowed(result.url)) {
+    return {
+      ...result,
+      fetched: false,
+      error: "Skipped private or unsupported URL",
+      text: result.snippet || "",
+      textLength: 0,
+    };
+  }
+  try {
+    const response = await fetch(result.url, {
+      redirect: "follow",
+      headers: {
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,application/json;q=0.7,*/*;q=0.4",
+        "User-Agent": "CarthaResearchRoom/1.0 (+local Hermes research)",
+      },
+      signal: AbortSignal.timeout(18_000),
+    });
+    const type = response.headers.get("content-type") || "";
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (type && !/(text\/|html|json|xml|javascript)/iu.test(type)) {
+      throw new Error(`Unsupported content type: ${type}`);
+    }
+    const raw = await readResponseTextLimited(response);
+    const text = htmlToResearchText(raw).slice(0, maxTextChars);
+    return {
+      ...result,
+      fetched: true,
+      contentType: type,
+      text,
+      textLength: text.length,
+      excerpt: clampText(text || result.snippet, 900),
+    };
+  } catch (err) {
+    return {
+      ...result,
+      fetched: false,
+      error: String(err?.message || err),
+      text: result.snippet || "",
+      textLength: 0,
+      excerpt: result.snippet || "",
+    };
+  }
+}
+
+function sourceHost(source) {
+  try {
+    return new URL(source.url).hostname.replace(/^www\./u, "");
+  } catch {
+    return "";
+  }
+}
+
+function buildResearchPrompt(run) {
+  const sources = run.sources
+    .map((source, index) => {
+      const label = source.id || `S${index + 1}`;
+      return [
+        `[${label}] ${source.title}`,
+        `URL: ${source.url}`,
+        source.publishedDate ? `Published: ${source.publishedDate}` : "",
+        source.snippet ? `Search snippet: ${source.snippet}` : "",
+        `Extracted text:\n${(source.text || source.excerpt || "").slice(0, 9_000)}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n---\n\n");
+  return [
+    {
+      role: "system",
+      content:
+        "You are Cartha Research Room, a careful web research analyst. Use only the supplied source pack. Be concise but substantive. Cite factual claims with bracketed source IDs like [S1]. If sources disagree or are weak, say so plainly. Do not invent citations.",
+    },
+    {
+      role: "user",
+      content: `Research question: ${run.query}\n\nMode: ${run.mode}\n\nSource pack:\n${sources}\n\nWrite a markdown answer with:\n1. a direct answer first,\n2. 3-6 key findings with citations,\n3. source notes / caveats,\n4. suggested follow-up searches if useful.`,
+    },
+  ];
+}
+
+async function callResearchModel(run) {
+  const messages = buildResearchPrompt(run);
+  const localModel = HERMES_RESEARCH_MODEL || (await getHermesLocalModel());
+  const candidates = [
+    {
+      label: "local",
+      url: `${OLLAMA_API_BASE}/chat/completions`,
+      headers: { "Content-Type": "application/json" },
+      body: { model: localModel, messages, temperature: 0.2, max_tokens: 2200 },
+    },
+  ];
+
+  if (HERMES_RESEARCH_CLOUD_FALLBACK) {
+    const key = await getOpenRouterKey();
+    if (key) {
+      candidates.push({
+        label: "openrouter",
+        url: `${OPENROUTER_API_BASE}/chat/completions`,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        body: {
+          model: process.env.HERMES_RESEARCH_FALLBACK_MODEL || OPENROUTER_SMALL_MODEL,
+          messages,
+          temperature: 0.2,
+          max_tokens: 2200,
+        },
+      });
+    }
+  }
+
+  const errors = [];
+  for (const candidate of candidates) {
+    try {
+      const response = await fetch(candidate.url, {
+        method: "POST",
+        headers: candidate.headers,
+        body: JSON.stringify(candidate.body),
+        signal: AbortSignal.timeout(HERMES_RESEARCH_MODEL_TIMEOUT_MS),
+      });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`${candidate.label} HTTP ${response.status}: ${text.slice(0, 500)}`);
+      const payload = JSON.parse(text);
+      const content = payload?.choices?.[0]?.message?.content || payload?.choices?.[0]?.delta?.content || "";
+      if (!String(content).trim()) throw new Error(`${candidate.label} returned no content`);
+      return { answer: String(content).trim(), model: candidate.body.model, backend: candidate.label };
+    } catch (err) {
+      errors.push(`${candidate.label}: ${err?.message || err}`);
+    }
+  }
+  throw new Error(errors.join(" | ") || "No research model candidate succeeded");
+}
+
+function buildExtractiveResearchAnswer(run, modelError = "") {
+  const topSources = run.sources.filter((source) => source.excerpt || source.snippet).slice(0, 5);
+  const bullets = topSources
+    .map((source) => `- **${source.title || sourceHost(source) || source.id}**: ${clampText(source.excerpt || source.snippet, 360)} [${source.id}]`)
+    .join("\n");
+  const caveat = modelError ? `\n\n_Model synthesis fallback: ${clampText(modelError, 260)}_` : "";
+  return `## Direct answer\nI found ${run.sources.length} search results and read ${run.sources.filter((source) => source.fetched).length} pages. The model synthesis step was unavailable, so this is an extractive source brief.\n\n## Source brief\n${bullets || "- No readable source text was available."}\n\n## Caveats\nUse this as a source map, not a final synthesized answer. Re-run when the local model is warm if you want a fuller cited synthesis.${caveat}`;
+}
+
+function publicResearchRun(run, includeDetails = false) {
+  return {
+    id: run.id,
+    query: run.query,
+    title: run.title,
+    mode: run.mode,
+    status: run.status,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    durationMs: run.durationMs,
+    backend: run.backend,
+    model: run.model,
+    error: run.error,
+    answer: includeDetails ? run.answer : clampText(run.answer || "", 420),
+    sources: (run.sources || []).map((source) => ({
+      id: source.id,
+      title: source.title,
+      url: source.url,
+      host: sourceHost(source),
+      snippet: source.snippet,
+      excerpt: includeDetails ? source.excerpt : clampText(source.excerpt || source.snippet || "", 260),
+      fetched: source.fetched,
+      error: source.error,
+      score: source.score,
+      rankScore: source.rankScore,
+      engine: source.engine,
+    })),
+  };
+}
+
+async function readResearchRuns() {
+  const runs = await readJsonFile(HERMES_RESEARCH_RUNS_PATH, []);
+  return Array.isArray(runs) ? runs : [];
+}
+
+async function writeResearchRun(run) {
+  const existing = await readResearchRuns();
+  const without = existing.filter((item) => item?.id !== run.id);
+  await writeJsonFile(HERMES_RESEARCH_RUNS_PATH, [run, ...without].slice(0, 60));
+}
+
+async function buildResearchRun(input) {
+  const started = Date.now();
+  const query = String(input.query || input.prompt || "").trim();
+  if (!query) throw Object.assign(new Error("Research query is required"), { status: 400 });
+  if (query.length > 1_200) throw Object.assign(new Error("Research query is too long"), { status: 413 });
+  const mode = ["quick", "deep"].includes(String(input.mode || "")) ? String(input.mode) : "quick";
+  const maxResults = clampNumber(input.maxResults, 3, 12, mode === "deep" ? Math.max(8, HERMES_RESEARCH_MAX_RESULTS) : HERMES_RESEARCH_MAX_RESULTS);
+  const maxFetches = clampNumber(input.maxFetches, 2, 8, mode === "deep" ? Math.max(6, HERMES_RESEARCH_MAX_FETCHES) : HERMES_RESEARCH_MAX_FETCHES);
+  const now = new Date().toISOString();
+  const run = {
+    id: `rr_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 8)}`,
+    query,
+    title: clampText(input.title || query, 90),
+    slug: slugifyResearchTitle(input.title || query),
+    mode,
+    status: "running",
+    createdAt: now,
+    updatedAt: now,
+    sources: [],
+    answer: "",
+  };
+  await writeResearchRun(run);
+
+  try {
+    const searchResults = await searxngSearch(query, maxResults);
+    const fetched = await Promise.all(searchResults.slice(0, maxFetches).map((result) => fetchResearchSource(result, mode === "deep" ? 18_000 : 11_000)));
+    const unfetched = searchResults.slice(maxFetches).map((result) => ({
+      ...result,
+      fetched: false,
+      text: result.snippet || "",
+      excerpt: result.snippet || "",
+      textLength: 0,
+    }));
+    const terms = queryTerms(query);
+    run.sources = [...fetched, ...unfetched]
+      .map((source, index) => ({ ...source, id: `S${index + 1}`, rankScore: scoreResearchSource(source, terms) }))
+      .sort((a, b) => b.rankScore - a.rankScore)
+      .map((source, index) => ({ ...source, id: `S${index + 1}` }));
+    try {
+      const synthesis = await callResearchModel(run);
+      run.answer = synthesis.answer;
+      run.model = synthesis.model;
+      run.backend = synthesis.backend;
+      run.status = "completed";
+    } catch (err) {
+      run.answer = buildExtractiveResearchAnswer(run, String(err?.message || err));
+      run.error = String(err?.message || err);
+      run.backend = "extractive-fallback";
+      run.status = "completed_with_fallback";
+    }
+  } catch (err) {
+    run.status = "failed";
+    run.error = String(err?.message || err);
+    run.answer = `Research failed before sources could be collected: ${run.error}`;
+  }
+
+  run.durationMs = Date.now() - started;
+  run.updatedAt = new Date().toISOString();
+  await writeResearchRun(run);
+  return run;
+}
+
+async function buildResearchStatus() {
+  const [runs, searxng] = await Promise.all([
+    readResearchRuns(),
+    fetch(`${HERMES_RESEARCH_SEARXNG_URL}/`, {
+      signal: AbortSignal.timeout(2_500),
+      headers: { Accept: "text/html,application/json" },
+    })
+      .then((response) => ({ ok: response.ok, status: response.status }))
+      .catch((err) => ({ ok: false, error: String(err?.message || err) })),
+  ]);
+  return {
+    ok: true,
+    searxng: {
+      url: HERMES_RESEARCH_SEARXNG_URL,
+      ready: searxng.ok === true,
+      status: searxng.status || null,
+      error: searxng.error || null,
+    },
+    model: HERMES_RESEARCH_MODEL || (await getHermesLocalModel()),
+    cloudFallback: HERMES_RESEARCH_CLOUD_FALLBACK,
+    runsPath: HERMES_RESEARCH_RUNS_PATH,
+    recentRuns: runs.slice(0, 10).map((run) => publicResearchRun(run, false)),
+  };
 }
 
 function messageText(content) {
@@ -648,10 +1057,11 @@ async function readPolicySummary() {
 async function readToolCapabilities(statusPayload = null, wakePayload = null) {
   const status = statusPayload || (await buildStatusPayload().catch(() => null));
   const wake = wakePayload || (await buildWakePayload().catch(() => null));
-  const [agentBrowser, cuaDriver, taskScript] = await Promise.all([
+  const [agentBrowser, cuaDriver, taskScript, researchStatus] = await Promise.all([
     commandOk("which", ["agent-browser"]),
     commandOk("which", ["cua-driver"]),
     fileExists(HERMES_TASK_SH),
+    buildResearchStatus().catch((err) => ({ searxng: { ready: false, error: String(err?.message || err) } })),
   ]);
   return [
     {
@@ -685,6 +1095,16 @@ async function readToolCapabilities(statusPayload = null, wakePayload = null) {
       ready: taskScript,
       icon: "checklist",
       detail: taskScript ? HERMES_TASK_SH : "hermes-task.sh is missing",
+    },
+    {
+      id: "research_room",
+      label: "Research Room",
+      status: researchStatus?.searxng?.ready ? "ready" : "check",
+      ready: researchStatus?.searxng?.ready === true,
+      icon: "sparkle.magnifyingglass",
+      detail: researchStatus?.searxng?.ready
+        ? `SearXNG ready · ${researchStatus.model || "local model"}`
+        : `Search backend unavailable: ${researchStatus?.searxng?.error || HERMES_RESEARCH_SEARXNG_URL}`,
     },
     {
       id: "browser",
@@ -943,6 +1363,44 @@ async function handleOperatorTaskSubmit(req, res) {
     });
   } catch (err) {
     return sendError(res, 502, "Could not queue Cartha task", String(err?.stderr || err?.stdout || err?.message || err));
+  }
+}
+
+async function handleResearchStatus(_req, res) {
+  sendJson(res, 200, await buildResearchStatus());
+}
+
+async function handleResearchRuns(_req, res) {
+  const runs = await readResearchRuns();
+  sendJson(res, 200, {
+    ok: true,
+    runsPath: HERMES_RESEARCH_RUNS_PATH,
+    runs: runs.map((run) => publicResearchRun(run, false)),
+  });
+}
+
+async function handleResearchRunDetail(_req, res, id) {
+  const runs = await readResearchRuns();
+  const run = runs.find((item) => item?.id === id);
+  if (!run) return sendError(res, 404, "Research run not found");
+  sendJson(res, 200, { ok: true, run: publicResearchRun(run, true) });
+}
+
+async function handleResearchRunCreate(req, res) {
+  let body = {};
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendError(res, err.status || 400, err.message || "Invalid JSON body");
+  }
+  try {
+    const run = await buildResearchRun(body);
+    sendJson(res, 200, {
+      ok: run.status !== "failed",
+      run: publicResearchRun(run, true),
+    });
+  } catch (err) {
+    return sendError(res, err.status || 500, "Could not run research", String(err?.message || err));
   }
 }
 
@@ -1309,6 +1767,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/operator/tasks") return handleOperatorTasks(req, res);
     if (req.method === "GET" && url.pathname === "/api/operator/tools") return handleOperatorTools(req, res);
     if (req.method === "POST" && url.pathname === "/api/operator/tasks") return handleOperatorTaskSubmit(req, res);
+    if (req.method === "GET" && url.pathname === "/api/research/status") return handleResearchStatus(req, res);
+    if (req.method === "GET" && url.pathname === "/api/research/runs") return handleResearchRuns(req, res);
+    if (req.method === "POST" && url.pathname === "/api/research/runs") return handleResearchRunCreate(req, res);
+    const researchRunDetail = url.pathname.match(/^\/api\/research\/runs\/([^/]+)$/u);
+    if (req.method === "GET" && researchRunDetail) return handleResearchRunDetail(req, res, decodeURIComponent(researchRunDetail[1]));
     const testFlightAction = url.pathname.match(/^\/api\/testflight\/proposals\/([^/]+)\/(approve|skip)$/u);
     if (req.method === "POST" && testFlightAction) {
       return handleTestFlightAction(req, res, decodeURIComponent(testFlightAction[1]), testFlightAction[2]);

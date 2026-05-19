@@ -28,6 +28,14 @@ const wakeGuardrailsEl = document.querySelector("#wake-guardrails");
 const activeWorkList = document.querySelector("#active-work-list");
 const sessionList = document.querySelector("#session-list");
 const sessionDetail = document.querySelector("#session-detail");
+const refreshResearchButton = document.querySelector("#refresh-research");
+const researchForm = document.querySelector("#research-form");
+const researchQuery = document.querySelector("#research-query");
+const researchRunButton = document.querySelector("#research-run");
+const researchStatusEl = document.querySelector("#research-status");
+const researchResult = document.querySelector("#research-result");
+const researchSources = document.querySelector("#research-sources");
+const researchHistory = document.querySelector("#research-history");
 
 let conversation = [];
 let activeController = null;
@@ -336,6 +344,136 @@ function renderActiveWork(activeWork = {}) {
   }
 }
 
+function selectedResearchMode() {
+  return document.querySelector('input[name="research-mode"]:checked')?.value || "quick";
+}
+
+function setResearchBusy(busy) {
+  if (researchRunButton) researchRunButton.disabled = busy;
+  if (researchQuery) researchQuery.disabled = busy;
+  if (researchRunButton) researchRunButton.textContent = busy ? "Researching…" : "Run research";
+}
+
+function renderResearchRun(run, { full = false } = {}) {
+  if (!run || !researchResult) return;
+  researchResult.className = `research-result ${run.status === "failed" ? "is-error" : ""}`;
+  researchResult.textContent = run.answer || "No answer yet.";
+
+  if (!researchSources) return;
+  researchSources.innerHTML = "";
+  const meta = document.createElement("div");
+  meta.className = "research-meta muted";
+  meta.textContent = [
+    run.status || "unknown",
+    run.backend || "",
+    run.model || "",
+    Number.isFinite(run.durationMs) ? `${Math.round(run.durationMs / 1000)}s` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  researchSources.appendChild(meta);
+
+  for (const source of (run.sources || []).slice(0, full ? 10 : 6)) {
+    const link = document.createElement("a");
+    link.className = `research-source ${source.fetched ? "" : "is-muted"}`;
+    link.href = source.url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    const title = document.createElement("span");
+    title.className = "research-source-title";
+    title.textContent = `[${source.id}] ${source.title || source.host || "Source"}`;
+    const detail = document.createElement("span");
+    detail.className = "muted";
+    detail.textContent = `${source.host || ""}${source.fetched ? " · read" : source.error ? ` · ${source.error}` : " · search result only"}${source.engine ? ` · ${source.engine}` : ""}`;
+    const excerpt = document.createElement("span");
+    excerpt.className = "research-source-excerpt";
+    excerpt.textContent = source.excerpt || source.snippet || "";
+    link.append(title, detail, excerpt);
+    researchSources.appendChild(link);
+  }
+}
+
+function renderResearchHistory(runs = []) {
+  if (!researchHistory) return;
+  researchHistory.innerHTML = "";
+  if (!runs.length) {
+    researchHistory.textContent = "No research runs yet.";
+    return;
+  }
+  for (const run of runs.slice(0, 8)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "research-history-item";
+    const title = document.createElement("span");
+    title.className = "canvas-item-title";
+    title.textContent = run.title || run.query || run.id;
+    const meta = document.createElement("span");
+    meta.className = "muted";
+    meta.textContent = `${run.status || "done"} · ${formatDateTime(run.updatedAt || run.createdAt)} · ${(run.sources || []).length} sources`;
+    button.append(title, meta);
+    button.addEventListener("click", async () => {
+      try {
+        researchResult.textContent = "Loading research run…";
+        const res = await fetch(`/api/research/runs/${encodeURIComponent(run.id)}`);
+        const payload = await res.json();
+        if (!res.ok || !payload.ok) throw new Error(payload.detail || payload.error || `HTTP ${res.status}`);
+        renderResearchRun(payload.run, { full: true });
+      } catch (err) {
+        researchResult.textContent = `Could not load run: ${err.message || err}`;
+      }
+    });
+    researchHistory.appendChild(button);
+  }
+}
+
+async function refreshResearch() {
+  if (!researchStatusEl) return;
+  researchStatusEl.textContent = "Checking local research backend…";
+  try {
+    const res = await fetch("/api/research/status");
+    const payload = await res.json();
+    if (!res.ok || !payload.ok) throw new Error(payload.detail || payload.error || `HTTP ${res.status}`);
+    researchStatusEl.textContent = payload.searxng?.ready
+      ? `Ready · ${payload.searxng.url} · ${payload.model || "local model"}`
+      : `Search backend unavailable · ${payload.searxng?.error || payload.searxng?.url || "unknown"}`;
+    renderResearchHistory(payload.recentRuns || []);
+    if ((payload.recentRuns || []).length && researchResult?.classList.contains("muted")) {
+      renderResearchRun(payload.recentRuns[0]);
+    }
+  } catch (err) {
+    researchStatusEl.textContent = `Research status failed: ${err.message || err}`;
+  }
+}
+
+async function runResearch(queryOverride = "") {
+  if (!researchResult || !researchQuery) return;
+  const query = (queryOverride || researchQuery.value || "").trim();
+  if (!query) {
+    researchQuery.focus();
+    return;
+  }
+  setResearchBusy(true);
+  researchResult.className = "research-result";
+  researchResult.textContent = "Searching SearXNG, reading sources, and asking the local model for a cited synthesis…";
+  if (researchSources) researchSources.innerHTML = "";
+  try {
+    const res = await fetch("/api/research/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, mode: selectedResearchMode() }),
+    });
+    const payload = await res.json();
+    if (!res.ok || !payload.run) throw new Error(payload.detail || payload.error || `HTTP ${res.status}`);
+    renderResearchRun(payload.run, { full: true });
+    await refreshResearch();
+  } catch (err) {
+    researchResult.className = "research-result is-error";
+    researchResult.textContent = `Research failed: ${err.message || err}`;
+  } finally {
+    setResearchBusy(false);
+  }
+}
+
 function sessionKindLabel(kind) {
   if (kind === "scheduled") return "Cron";
   if (kind === "api") return "API";
@@ -603,6 +741,11 @@ clearButton.addEventListener("click", () => {
 refreshButton.addEventListener("click", () => void refreshStatus());
 refreshTestFlightButton?.addEventListener("click", () => void refreshTestFlightProposals());
 refreshCanvasButton?.addEventListener("click", () => void refreshCanvas());
+refreshResearchButton?.addEventListener("click", () => void refreshResearch());
+researchForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void runResearch();
+});
 testFlightModalYes?.addEventListener("click", async () => {
   if (!activeModalProposal) return;
   testFlightModalYes.disabled = true;
@@ -639,10 +782,19 @@ document.querySelectorAll("[data-prompt]").forEach((button) => {
   });
 });
 
+document.querySelectorAll("[data-research-prompt]").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (researchQuery) researchQuery.value = button.dataset.researchPrompt || "";
+    researchQuery?.focus();
+  });
+});
+
 addMessage("system", "New Hermes agent session. Cmd+Enter sends immediately. Agent mode uses MiMo V2.5 Pro through Hermes tools; DeepSeek mode is for smaller text tasks; Gemma mode is for local vision/chat.");
 void refreshStatus();
 void refreshTestFlightProposals();
 void refreshCanvas();
+void refreshResearch();
 setInterval(refreshTestFlightProposals, 30_000);
 setInterval(refreshCanvas, 60_000);
+setInterval(refreshResearch, 120_000);
 updateAttachmentPreview();

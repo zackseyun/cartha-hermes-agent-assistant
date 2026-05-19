@@ -208,6 +208,68 @@ struct TaskHistoryResponse: Decodable {
     let note: String?
 }
 
+struct ResearchBackendStatus: Decodable {
+    let url: String?
+    let ready: Bool?
+    let status: Int?
+    let error: String?
+}
+
+struct ResearchStatus: Decodable {
+    let ok: Bool?
+    let searxng: ResearchBackendStatus?
+    let model: String?
+    let cloudFallback: Bool?
+    let runsPath: String?
+    let recentRuns: [ResearchRun]?
+}
+
+struct ResearchSource: Identifiable, Decodable {
+    let id: String
+    let title: String?
+    let url: String?
+    let host: String?
+    let snippet: String?
+    let excerpt: String?
+    let fetched: Bool?
+    let error: String?
+    let score: Double?
+    let rankScore: Double?
+    let engine: String?
+}
+
+struct ResearchRun: Identifiable, Decodable {
+    let id: String
+    let query: String
+    let title: String?
+    let mode: String?
+    let status: String?
+    let createdAt: String?
+    let updatedAt: String?
+    let durationMs: Int?
+    let backend: String?
+    let model: String?
+    let error: String?
+    let answer: String?
+    let sources: [ResearchSource]?
+}
+
+struct ResearchRunsResponse: Decodable {
+    let ok: Bool?
+    let runsPath: String?
+    let runs: [ResearchRun]
+}
+
+struct ResearchRunResponse: Decodable {
+    let ok: Bool?
+    let run: ResearchRun?
+}
+
+struct ResearchRunRequest: Encodable {
+    let query: String
+    let mode: String
+}
+
 struct OperatorOverview: Decodable {
     let ok: Bool?
     let generatedAt: String?
@@ -260,6 +322,7 @@ struct ChatMessage: Identifiable, Equatable {
 enum NativeTab: String, CaseIterable, Hashable {
     case now
     case operatorChat
+    case research
     case tasks
     case approvals
     case sessions
@@ -270,6 +333,7 @@ enum NativeTab: String, CaseIterable, Hashable {
         switch self {
         case .now: return "Now"
         case .operatorChat: return "Ask"
+        case .research: return "Research"
         case .tasks: return "Tasks"
         case .approvals: return "Approvals"
         case .sessions: return "Sessions"
@@ -282,6 +346,7 @@ enum NativeTab: String, CaseIterable, Hashable {
         switch self {
         case .now: return "Live operator cockpit"
         case .operatorChat: return "Chat or launch durable work"
+        case .research: return "Source-backed research room"
         case .tasks: return "Queued, running, blocked, and completed work"
         case .approvals: return "Apple upload gates"
         case .sessions: return "Recent Hermes conversations"
@@ -294,6 +359,7 @@ enum NativeTab: String, CaseIterable, Hashable {
         switch self {
         case .now: return "sparkles.rectangle.stack"
         case .operatorChat: return "text.bubble"
+        case .research: return "magnifyingglass.circle"
         case .tasks: return "checklist"
         case .approvals: return "checkmark.seal"
         case .sessions: return "clock.arrow.circlepath"
@@ -319,6 +385,11 @@ final class HermesService: ObservableObject {
     @Published var sessions: [HermesSession] = []
     @Published var tasks: [HarnessTask] = []
     @Published var tools: [ToolCapability] = []
+    @Published var researchStatus: ResearchStatus?
+    @Published var researchRuns: [ResearchRun] = []
+    @Published var selectedResearchRun: ResearchRun?
+    @Published var isResearching = false
+    @Published var researchError: String?
     @Published var policy: PolicySummary?
     @Published var activeWork: ActiveWork?
     @Published var sessionCount = 0
@@ -361,6 +432,7 @@ final class HermesService: ObservableObject {
 
     func refreshAll() async {
         await refreshOverview()
+        await refreshResearchStatus()
     }
 
     func refreshOverview() async {
@@ -436,6 +508,83 @@ final class HermesService: ObservableObject {
             lastError = "Tasks: \(error.localizedDescription)"
         }
     }
+
+    func refreshResearchStatus() async {
+        do {
+            let payload = try await getJSON(ResearchStatus.self, path: "/api/research/status")
+            researchStatus = payload
+            if let recent = payload.recentRuns {
+                researchRuns = recent
+                if selectedResearchRun == nil {
+                    selectedResearchRun = recent.first
+                }
+            }
+            researchError = nil
+        } catch {
+            researchError = error.localizedDescription
+            lastError = "Research: \(error.localizedDescription)"
+        }
+    }
+
+    func refreshResearchRuns() async {
+        do {
+            let response = try await getJSON(ResearchRunsResponse.self, path: "/api/research/runs")
+            researchRuns = response.runs
+            if selectedResearchRun == nil {
+                selectedResearchRun = response.runs.first
+            }
+            researchError = nil
+        } catch {
+            researchError = error.localizedDescription
+            lastError = "Research history: \(error.localizedDescription)"
+        }
+    }
+
+    func loadResearchRun(_ run: ResearchRun) async {
+        do {
+            let response = try await getJSON(ResearchRunResponse.self, path: "/api/research/runs/\(run.id)")
+            if let fullRun = response.run {
+                selectedResearchRun = fullRun
+                if let index = researchRuns.firstIndex(where: { $0.id == fullRun.id }) {
+                    researchRuns[index] = fullRun
+                }
+            }
+            researchError = nil
+        } catch {
+            researchError = error.localizedDescription
+            lastError = "Research run: \(error.localizedDescription)"
+        }
+    }
+
+    func runResearch(_ query: String, mode: String = "quick") async {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isResearching else { return }
+        OperatorSound.send()
+        isResearching = true
+        researchError = nil
+        defer { isResearching = false }
+        do {
+            let response = try await postJSON(ResearchRunResponse.self, path: "/api/research/runs", body: ResearchRunRequest(query: trimmed, mode: mode))
+            guard let run = response.run else {
+                throw NSError(domain: "CarthaHermesNative", code: -1, userInfo: [NSLocalizedDescriptionKey: "Research backend did not return a run."])
+            }
+            selectedResearchRun = run
+            researchRuns.removeAll { $0.id == run.id }
+            researchRuns.insert(run, at: 0)
+            if run.status == "failed" {
+                OperatorSound.warning()
+                researchError = run.error ?? "Research failed."
+            } else {
+                OperatorSound.success()
+            }
+            await refreshResearchStatus()
+        } catch {
+            OperatorSound.warning()
+            researchError = error.localizedDescription
+            lastError = "Research: \(error.localizedDescription)"
+        }
+    }
+
 
     func openTaskHistory(_ task: HarnessTask) async {
         selectedTaskForHistory = task
@@ -850,7 +999,7 @@ func relativeTime(_ value: String?) -> String {
 
 func statusColor(_ status: String?) -> Color {
     switch status?.lowercased() {
-    case "ready", "online", "listening", "completed", "deploy_requested": return .green
+    case "ready", "online", "listening", "completed", "completed_with_fallback", "deploy_requested": return .green
     case "queued", "running", "pending", "needs_approval", "check": return .orange
     case "blocked", "offline", "missing", "approval_failed": return .red
     default: return .secondary
@@ -1235,6 +1384,8 @@ struct ContentPane: View {
                     NowView(service: service)
                 case .operatorChat:
                     OperatorView(service: service)
+                case .research:
+                    ResearchRoomView(service: service)
                 case .tasks:
                     TasksView(service: service)
                 case .approvals:
@@ -1291,6 +1442,8 @@ struct NowView: View {
                         VStack(spacing: 10) {
                             Button { OperatorSound.navigate(); service.selectedTab = .operatorChat } label: { Label("Ask or run task", systemImage: "text.bubble") }
                                 .buttonStyle(.borderedProminent)
+                            Button { OperatorSound.navigate(); service.selectedTab = .research } label: { Label("Research room", systemImage: "magnifyingglass.circle") }
+                                .buttonStyle(.bordered)
                             Button { OperatorSound.navigate(); service.selectedTab = .tasks } label: { Label("Review tasks", systemImage: "checklist") }
                                 .buttonStyle(.bordered)
                             Button { OperatorSound.navigate(); service.selectedTab = .approvals } label: { Label("Apple approvals", systemImage: "checkmark.seal") }
@@ -1555,6 +1708,220 @@ struct MessageBubble: View {
         case "system": return AnyShapeStyle(Color.purple.opacity(0.12))
         default: return AnyShapeStyle(Color.white.opacity(0.58))
         }
+    }
+}
+
+
+// MARK: - Research Room
+
+struct ResearchRoomView: View {
+    @ObservedObject var service: HermesService
+    @State private var query = ""
+    @State private var mode = "quick"
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                GlassCard(padding: 22) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(alignment: .top) {
+                            VStack(alignment: .leading, spacing: 7) {
+                                HStack(spacing: 8) {
+                                    StatusPill(
+                                        text: service.researchStatus?.searxng?.ready == true ? "local search ready" : "search warming",
+                                        color: service.researchStatus?.searxng?.ready == true ? .green : .orange
+                                    )
+                                    if service.researchStatus?.cloudFallback == true {
+                                        StatusPill(text: "cloud fallback allowed", color: .purple)
+                                    }
+                                }
+                                Text("Research Room")
+                                    .font(.system(size: 28, weight: .black, design: .rounded))
+                                Text("Search SearXNG, safely read public sources, then synthesize through the local Hermes model with citations.")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button {
+                                OperatorSound.navigate()
+                                Task { await service.refreshResearchStatus() }
+                            } label: {
+                                Label("Refresh", systemImage: "arrow.clockwise")
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        HStack(alignment: .center, spacing: 10) {
+                            TextField("Ask a research question…", text: $query)
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit { Task { await service.runResearch(query, mode: mode) } }
+                            Picker("Depth", selection: $mode) {
+                                Text("Quick").tag("quick")
+                                Text("Deep").tag("deep")
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 150)
+                            Button {
+                                Task { await service.runResearch(query, mode: mode) }
+                            } label: {
+                                if service.isResearching {
+                                    HStack(spacing: 7) {
+                                        ProgressView().controlSize(.small)
+                                        Text("Researching")
+                                    }
+                                } else {
+                                    Label("Run", systemImage: "magnifyingglass")
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || service.isResearching)
+                        }
+
+                        if let error = service.researchError {
+                            Text("⚠️ \(error)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.red)
+                        } else if let status = service.researchStatus {
+                            Text("\(status.searxng?.url ?? "SearXNG") · \(status.model ?? "local model") · saved to \(status.runsPath ?? "~/.hermes/research-room")")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+
+                HStack(alignment: .top, spacing: 14) {
+                    GlassCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Text("Recent runs")
+                                    .font(.headline)
+                                Spacer()
+                                Button("Refresh") {
+                                    OperatorSound.navigate()
+                                    Task { await service.refreshResearchRuns() }
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                            if service.researchRuns.isEmpty {
+                                EmptyState(icon: "doc.text.magnifyingglass", title: "No research yet", detail: "Run your first query above.")
+                            } else {
+                                ForEach(service.researchRuns.prefix(10)) { run in
+                                    Button {
+                                        OperatorSound.navigate()
+                                        Task { await service.loadResearchRun(run) }
+                                    } label: {
+                                        ResearchRunSummary(run: run, selected: service.selectedResearchRun?.id == run.id)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                    .frame(width: 330)
+
+                    GlassCard {
+                        if let run = service.selectedResearchRun {
+                            VStack(alignment: .leading, spacing: 14) {
+                                HStack(alignment: .top) {
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(run.title ?? run.query)
+                                            .font(.system(size: 20, weight: .black, design: .rounded))
+                                        Text("\(run.mode ?? "quick") · \(run.backend ?? "backend") · \(run.model ?? "model") · \(run.durationMs.map { "\($0) ms" } ?? "latest")")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    StatusPill(text: run.status ?? "unknown", color: statusColor(run.status))
+                                }
+                                Text(run.answer ?? "No answer captured yet.")
+                                    .font(.system(size: 13.5, weight: .medium))
+                                    .textSelection(.enabled)
+                                    .lineSpacing(3)
+                                Divider().opacity(0.35)
+                                Text("Sources")
+                                    .font(.headline)
+                                ForEach(Array((run.sources ?? []).prefix(8))) { source in
+                                    ResearchSourceRow(source: source)
+                                }
+                            }
+                        } else {
+                            EmptyState(icon: "magnifyingglass.circle", title: "Choose or run research", detail: "Hermes will show the answer, source map, and citations here.")
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 24)
+        }
+        .task {
+            if service.researchStatus == nil {
+                await service.refreshResearchStatus()
+            }
+        }
+    }
+}
+
+struct ResearchRunSummary: View {
+    let run: ResearchRun
+    let selected: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(statusColor(run.status))
+                    .frame(width: 8, height: 8)
+                Text(run.title ?? run.query)
+                    .font(.system(size: 13, weight: .bold))
+                    .lineLimit(2)
+                Spacer()
+            }
+            Text("\(run.status ?? "done") · \(relativeTime(run.updatedAt ?? run.createdAt)) · \((run.sources ?? []).count) sources")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(11)
+        .background(selected ? Color.white.opacity(0.58) : Color.white.opacity(0.22), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(selected ? Color.cyan.opacity(0.5) : Color.white.opacity(0.18)))
+    }
+}
+
+struct ResearchSourceRow: View {
+    let source: ResearchSource
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(source.id)
+                    .font(.caption2.bold())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.cyan.opacity(0.16), in: Capsule())
+                if let urlText = source.url, let url = URL(string: urlText) {
+                    Link(source.title ?? source.host ?? urlText, destination: url)
+                        .font(.system(size: 13, weight: .bold))
+                        .lineLimit(1)
+                } else {
+                    Text(source.title ?? source.host ?? "Source")
+                        .font(.system(size: 13, weight: .bold))
+                        .lineLimit(1)
+                }
+                Spacer()
+                if source.fetched == true {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+            }
+            Text(source.excerpt ?? source.snippet ?? source.error ?? "No source excerpt available.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+        }
+        .padding(11)
+        .background(Color.white.opacity(0.22), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
@@ -2206,6 +2573,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showMainWindow()
         case "sessions", "session":
             service.selectedTab = .sessions
+            showMainWindow()
+        case "research", "search":
+            service.selectedTab = .research
             showMainWindow()
         case "wake", "voice":
             service.selectedTab = .wake
