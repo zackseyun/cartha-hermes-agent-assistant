@@ -313,10 +313,37 @@ struct ServerError: Decodable {
     let detail: String?
 }
 
+struct ActivityEvent: Identifiable, Equatable {
+    let id: UUID
+    var key: String
+    var kind: String
+    var title: String
+    var detail: String
+    var timestamp: Date
+    var accumulates: Bool
+
+    init(key: String = UUID().uuidString, kind: String = "status", title: String, detail: String = "", timestamp: Date = Date(), accumulates: Bool = false) {
+        self.id = UUID()
+        self.key = key
+        self.kind = kind
+        self.title = title
+        self.detail = detail
+        self.timestamp = timestamp
+        self.accumulates = accumulates
+    }
+}
+
+struct StreamPatch {
+    var visibleDelta = ""
+    var activityEvents: [ActivityEvent] = []
+}
+
 struct ChatMessage: Identifiable, Equatable {
     let id = UUID()
     let role: String
     var content: String
+    var activityEvents: [ActivityEvent] = []
+    var activityExpanded = false
 }
 
 enum NativeTab: String, CaseIterable, Hashable {
@@ -617,7 +644,10 @@ final class HermesService: ObservableObject {
         guard !trimmed.isEmpty, !isSending else { return }
         OperatorSound.send()
         messages.append(ChatMessage(role: "user", content: trimmed))
-        messages.append(ChatMessage(role: "assistant", content: "Thinking locally…"))
+        messages.append(ChatMessage(role: "assistant", content: "Thinking locally…", activityEvents: [
+            ActivityEvent(key: "privacy", kind: "guardrail", title: "Activity view ready", detail: "Shows live stream events, tool calls, status, and token-ish chunk counts. Private hidden reasoning is not exposed."),
+            ActivityEvent(key: "request", kind: "status", title: "Request sent to local Hermes", detail: "Waiting for stream events…")
+        ]))
         let assistantIndex = messages.count - 1
         isSending = true
         defer { isSending = false }
@@ -637,41 +667,65 @@ final class HermesService: ObservableObject {
             let (bytes, response) = try await URLSession.shared.bytes(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
                 var errorBody = ""
-                for try await line in bytes.lines {
-                    errorBody += line
-                }
+                for try await line in bytes.lines { errorBody += line }
                 let data = Data(errorBody.utf8)
                 let serverError = try? JSONDecoder().decode(ServerError.self, from: data)
-                throw NSError(
-                    domain: "CarthaHermesNative",
-                    code: http.statusCode,
-                    userInfo: [NSLocalizedDescriptionKey: serverError?.detail ?? serverError?.error ?? "HTTP \(http.statusCode)"]
-                )
+                throw NSError(domain: "CarthaHermesNative", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: serverError?.detail ?? serverError?.error ?? "HTTP \(http.statusCode)"])
             }
             var reply = ""
             var raw = ""
+            var sseEvents = 0
             for try await line in bytes.lines {
                 raw += line + "\n"
-                let delta = Self.deltaFromSSELine(line)
-                if !delta.isEmpty {
-                    reply += delta
-                    messages[assistantIndex].content = reply
+                let patch = Self.patchFromSSELine(line)
+                if line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("data:") {
+                    sseEvents += 1
+                    mergeActivityEvent(ActivityEvent(key: "stream-stats", kind: "stats", title: "Stream stats", detail: "\(sseEvents) SSE event\(sseEvents == 1 ? "" : "s") · \(reply.count) visible character\(reply.count == 1 ? "" : "s") streamed"), intoMessageAt: assistantIndex)
+                }
+                for event in patch.activityEvents { mergeActivityEvent(event, intoMessageAt: assistantIndex) }
+                if !patch.visibleDelta.isEmpty {
+                    if reply.isEmpty {
+                        messages[assistantIndex].content = ""
+                        mergeActivityEvent(ActivityEvent(key: "answer", kind: "answer", title: "Answer stream started", detail: "Visible response text is now streaming into the chat bubble."), intoMessageAt: assistantIndex)
+                    }
+                    reply += patch.visibleDelta
+                    if messages.indices.contains(assistantIndex) { messages[assistantIndex].content = reply }
                 }
             }
             if reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 reply = Self.parseStreamingReply(raw)
-                messages[assistantIndex].content = reply.isEmpty ? "Hermes responded without visible text." : reply
+                if messages.indices.contains(assistantIndex) { messages[assistantIndex].content = reply.isEmpty ? "Hermes responded without visible text." : reply }
             }
+            mergeActivityEvent(ActivityEvent(key: "done", kind: "done", title: "Stream complete", detail: "Hermes finished this turn."), intoMessageAt: assistantIndex)
             OperatorSound.receive()
             lastError = nil
             await refreshOverview()
         } catch is CancellationError {
-            messages[assistantIndex].content = "Stopped."
+            if messages.indices.contains(assistantIndex) { messages[assistantIndex].content = "Stopped." }
+            mergeActivityEvent(ActivityEvent(key: "stopped", kind: "done", title: "Stopped", detail: "The local stream was cancelled."), intoMessageAt: assistantIndex)
             lastError = nil
         } catch {
-            messages[assistantIndex].content = "⚠️ \(error.localizedDescription)"
+            if messages.indices.contains(assistantIndex) { messages[assistantIndex].content = "⚠️ \(error.localizedDescription)" }
+            mergeActivityEvent(ActivityEvent(key: "error", kind: "error", title: "Stream error", detail: error.localizedDescription), intoMessageAt: assistantIndex)
             OperatorSound.warning()
             lastError = error.localizedDescription
+        }
+    }
+
+    private func mergeActivityEvent(_ event: ActivityEvent, intoMessageAt index: Int) {
+        guard messages.indices.contains(index) else { return }
+        if let existingIndex = messages[index].activityEvents.firstIndex(where: { $0.key == event.key }) {
+            if event.accumulates {
+                let existing = messages[index].activityEvents[existingIndex].detail
+                messages[index].activityEvents[existingIndex].detail = Self.clampActivityText(existing + event.detail, max: 1600)
+            } else {
+                messages[index].activityEvents[existingIndex].kind = event.kind
+                messages[index].activityEvents[existingIndex].title = event.title
+                messages[index].activityEvents[existingIndex].detail = event.detail
+            }
+            messages[index].activityEvents[existingIndex].timestamp = event.timestamp
+        } else {
+            messages[index].activityEvents.append(event)
         }
     }
 
@@ -826,37 +880,91 @@ final class HermesService: ObservableObject {
     }
 
     static func deltaFromSSELine(_ line: String) -> String {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("data:") else { return "" }
-        let payload = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
-        guard payload != "[DONE]", let data = payload.data(using: .utf8) else { return "" }
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let first = choices.first else { return "" }
-        if let delta = first["delta"] as? [String: Any], let content = delta["content"] as? String {
-            return content
-        }
-        if let message = first["message"] as? [String: Any], let content = message["content"] as? String {
-            return content
-        }
-        if let text = first["text"] as? String {
-            return text
-        }
-        return ""
+        patchFromSSELine(line).visibleDelta
     }
+
+    static func patchFromSSELine(_ line: String) -> StreamPatch {
+        var patch = StreamPatch()
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("data:") else { return patch }
+        let payload = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
+        if payload == "[DONE]" {
+            patch.activityEvents.append(ActivityEvent(key: "done-signal", kind: "done", title: "Done signal received", detail: "The upstream stream sent [DONE]."))
+            return patch
+        }
+        guard let data = payload.data(using: .utf8), let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            patch.activityEvents.append(ActivityEvent(key: "raw-non-json", kind: "event", title: "Non-JSON stream event", detail: clampActivityText(String(payload))))
+            return patch
+        }
+        if let choices = json["choices"] as? [[String: Any]], let first = choices.first {
+            if let finish = first["finish_reason"] as? String, !finish.isEmpty { patch.activityEvents.append(ActivityEvent(key: "finish", kind: "done", title: "Finish reason", detail: finish)) }
+            if let delta = first["delta"] as? [String: Any] {
+                if let role = delta["role"] as? String, role == "assistant" { patch.activityEvents.append(ActivityEvent(key: "assistant-start", kind: "status", title: "Assistant stream opened", detail: "Hermes started an assistant turn.")) }
+                if let content = delta["content"] as? String { patch.visibleDelta += content }
+                if delta["reasoning"] != nil || delta["reasoning_content"] != nil { patch.activityEvents.append(ActivityEvent(key: "reasoning-hidden", kind: "guardrail", title: "Reasoning signal received", detail: "The provider emitted a reasoning field. The cockpit shows activity/status instead of exposing private hidden reasoning text.")) }
+                patch.activityEvents.append(contentsOf: toolEvents(from: delta))
+            }
+            if let message = first["message"] as? [String: Any] {
+                if let content = message["content"] as? String { patch.visibleDelta += content }
+                patch.activityEvents.append(contentsOf: toolEvents(from: message))
+            }
+            if let text = first["text"] as? String { patch.visibleDelta += text }
+        }
+        if let usage = json["usage"] as? [String: Any] { patch.activityEvents.append(ActivityEvent(key: "usage", kind: "stats", title: "Token usage", detail: stringifyJSON(usage))) }
+        for key in ["tool_call", "tool_result", "tool_results", "tool_outputs", "tool_output"] {
+            if let value = json[key] { patch.activityEvents.append(ActivityEvent(key: "raw-\(key)", kind: "tool", title: key.replacingOccurrences(of: "_", with: " ").capitalized, detail: stringifyJSON(value))) }
+        }
+        return patch
+    }
+
+    static func toolEvents(from object: [String: Any]) -> [ActivityEvent] {
+        var events: [ActivityEvent] = []
+        guard let calls = object["tool_calls"] as? [[String: Any]] else { return events }
+        for call in calls {
+            let index = call["index"] as? Int ?? 0
+            let id = call["id"] as? String ?? "tool-\(index)"
+            let function = call["function"] as? [String: Any]
+            let name = function?["name"] as? String ?? call["name"] as? String
+            if let name, !name.isEmpty { events.append(ActivityEvent(key: "tool-\(id)", kind: "tool", title: "Tool call: \(name)", detail: "Hermes is preparing a local tool call.")) }
+            if let arguments = function?["arguments"] as? String, !arguments.isEmpty { events.append(ActivityEvent(key: "tool-\(id)-args", kind: "tool", title: "Tool arguments", detail: arguments, accumulates: true)) }
+        }
+        return events
+    }
+
+    static func stringifyJSON(_ value: Any) -> String {
+        if let string = value as? String { return clampActivityText(string) }
+        if JSONSerialization.isValidJSONObject(value), let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), let string = String(data: data, encoding: .utf8) { return clampActivityText(string) }
+        return clampActivityText(String(describing: value))
+    }
+
+    static func clampActivityText(_ value: String, max: Int = 700) -> String {
+        let text = value.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.count <= max { return text }
+        return "\(text.prefix(max - 1))…"
+    }
+
 }
 
 // MARK: - Design helpers
 
-let operatorBackground = LinearGradient(
-    colors: [
-        Color(red: 0.93, green: 0.97, blue: 1.0),
-        Color(red: 0.96, green: 0.93, blue: 1.0),
-        Color(red: 0.94, green: 0.98, blue: 0.96)
-    ],
-    startPoint: .topLeading,
-    endPoint: .bottomTrailing
-)
+enum OperatorTheme {
+    static let carthaRed = Color(red: 0.77, green: 0.10, blue: 0.37)
+    static let carthaHot = Color(red: 0.88, green: 0.18, blue: 0.50)
+    static let carthaDeep = Color(red: 0.42, green: 0.02, blue: 0.20)
+    static let cream = Color(red: 0.98, green: 0.95, blue: 0.88)
+    static let blush = Color(red: 1.00, green: 0.92, blue: 0.94)
+    static let paper = Color(red: 1.00, green: 0.985, blue: 0.945)
+    static let paperWarm = Color(red: 0.985, green: 0.955, blue: 0.90)
+    static let ink = Color(red: 0.13, green: 0.075, blue: 0.105)
+    static let mutedInk = Color(red: 0.44, green: 0.36, blue: 0.40)
+    static let hairline = Color(red: 0.77, green: 0.10, blue: 0.37).opacity(0.20)
+    static func display(_ size: CGFloat) -> Font { .custom("Chillax-Bold", size: size) }
+    static func title(_ size: CGFloat) -> Font { .custom("Chillax-Semibold", size: size) }
+    static func body(_ size: CGFloat) -> Font { .custom("Chillax-Medium", size: size) }
+    static func caption(_ size: CGFloat) -> Font { .custom("Chillax-Semibold", size: size) }
+}
+
+let operatorBackground = LinearGradient(colors: [OperatorTheme.cream, OperatorTheme.blush, OperatorTheme.paper], startPoint: .topLeading, endPoint: .bottomTrailing)
 
 struct AmbientAuroraView: View {
     @State private var drift = false
@@ -867,25 +975,25 @@ struct AmbientAuroraView: View {
             GeometryReader { proxy in
                 ZStack {
                     Circle()
-                        .fill(.cyan.opacity(0.24))
+                        .fill(OperatorTheme.carthaRed.opacity(0.18))
                         .blur(radius: 86)
                         .frame(width: 390, height: 390)
                         .offset(x: drift ? -proxy.size.width * 0.28 : -proxy.size.width * 0.42,
                                 y: drift ? -proxy.size.height * 0.30 : -proxy.size.height * 0.44)
                     Circle()
-                        .fill(.purple.opacity(0.20))
+                        .fill(OperatorTheme.carthaHot.opacity(0.15))
                         .blur(radius: 96)
                         .frame(width: 470, height: 470)
                         .offset(x: drift ? proxy.size.width * 0.24 : proxy.size.width * 0.38,
                                 y: drift ? -proxy.size.height * 0.40 : -proxy.size.height * 0.18)
                     Circle()
-                        .fill(.mint.opacity(0.18))
+                        .fill(Color(red: 0.98, green: 0.70, blue: 0.30).opacity(0.13))
                         .blur(radius: 90)
                         .frame(width: 420, height: 420)
                         .offset(x: drift ? proxy.size.width * 0.34 : proxy.size.width * 0.15,
                                 y: drift ? proxy.size.height * 0.34 : proxy.size.height * 0.20)
                     Circle()
-                        .stroke(.white.opacity(0.30), lineWidth: 1)
+                        .stroke(OperatorTheme.carthaRed.opacity(0.13), lineWidth: 1)
                         .blur(radius: 1)
                         .frame(width: drift ? 620 : 540, height: drift ? 620 : 540)
                         .offset(x: proxy.size.width * 0.18, y: proxy.size.height * 0.05)
@@ -905,11 +1013,11 @@ struct AnimatedLogo: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.36, style: .continuous)
-                .fill(LinearGradient(colors: [.cyan, .mint], startPoint: .topLeading, endPoint: .bottomTrailing))
-                .shadow(color: .cyan.opacity(sparkle ? 0.42 : 0.18), radius: sparkle ? 18 : 8, y: 8)
+                .fill(LinearGradient(colors: [OperatorTheme.carthaHot, OperatorTheme.carthaRed], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .shadow(color: OperatorTheme.carthaRed.opacity(sparkle ? 0.38 : 0.18), radius: sparkle ? 18 : 8, y: 8)
             Image(systemName: "sparkles")
                 .font(.system(size: size * 0.42, weight: .black))
-                .foregroundStyle(.black.opacity(0.78))
+                .foregroundStyle(.white)
                 .rotationEffect(.degrees(sparkle ? 8 : -5))
                 .scaleEffect(sparkle ? 1.08 : 0.96)
         }
@@ -964,9 +1072,9 @@ struct LivePulseBar: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.28))
+                Capsule().fill(OperatorTheme.carthaRed.opacity(0.12))
                 Capsule()
-                    .fill(LinearGradient(colors: [.clear, .cyan.opacity(0.8), .mint.opacity(0.55), .clear], startPoint: .leading, endPoint: .trailing))
+                    .fill(LinearGradient(colors: [.clear, OperatorTheme.carthaHot.opacity(0.95), OperatorTheme.carthaRed.opacity(0.75), .clear], startPoint: .leading, endPoint: .trailing))
                     .frame(width: max(120, proxy.size.width * 0.32))
                     .offset(x: sweep ? proxy.size.width : -proxy.size.width * 0.36)
                     .blur(radius: 0.5)
@@ -1002,7 +1110,7 @@ func statusColor(_ status: String?) -> Color {
     case "ready", "online", "listening", "completed", "completed_with_fallback", "deploy_requested": return .green
     case "queued", "running", "pending", "needs_approval", "check": return .orange
     case "blocked", "offline", "missing", "approval_failed": return .red
-    default: return .secondary
+    default: return OperatorTheme.mutedInk
     }
 }
 
@@ -1014,21 +1122,18 @@ struct GlassCard<Content: View>: View {
     var body: some View {
         content
             .padding(padding)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .background(
-                LinearGradient(colors: [.white.opacity(0.34), .white.opacity(0.08)], startPoint: .topLeading, endPoint: .bottomTrailing),
-                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
-            )
+            .background(LinearGradient(colors: [OperatorTheme.paper, OperatorTheme.paperWarm], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(.white.opacity(0.46), lineWidth: 1)
+                    .stroke(OperatorTheme.hairline, lineWidth: 1)
             )
             .overlay(alignment: .topLeading) {
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
                     .stroke(LinearGradient(colors: [.white.opacity(0.85), .clear], startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1)
                     .blendMode(.screen)
             }
-            .shadow(color: .black.opacity(0.08), radius: 24, x: 0, y: 14)
+            .foregroundStyle(OperatorTheme.ink)
+            .shadow(color: OperatorTheme.carthaDeep.opacity(0.10), radius: 24, x: 0, y: 14)
             .scaleEffect(hovering ? 1.006 : 1)
             .shadow(color: hovering ? .cyan.opacity(0.10) : .clear, radius: hovering ? 20 : 0)
             .animation(.spring(response: 0.28, dampingFraction: 0.82), value: hovering)
@@ -1046,7 +1151,7 @@ struct StatusPill: View {
             if let icon { Image(systemName: icon).font(.system(size: 10, weight: .bold)) }
             PulseDot(color: color).frame(width: 10, height: 10)
             Text(text)
-                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .font(OperatorTheme.caption(11))
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -1090,14 +1195,14 @@ struct MetricTile: View {
                     Spacer()
                 }
                 Text(title.uppercased())
-                    .font(.system(size: 10, weight: .black, design: .rounded))
+                    .font(OperatorTheme.caption(10))
                     .foregroundStyle(.secondary)
                     .tracking(1.1)
                 Text(value)
-                    .font(.system(size: 24, weight: .black, design: .rounded))
+                    .font(OperatorTheme.display(24))
                     .lineLimit(1)
                 Text(detail)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(OperatorTheme.body(12))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
@@ -1137,7 +1242,7 @@ struct BubbleView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 ZStack {
-                    Circle().fill(LinearGradient(colors: [.cyan, .mint], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    Circle().fill(LinearGradient(colors: [OperatorTheme.carthaHot, OperatorTheme.carthaRed], startPoint: .topLeading, endPoint: .bottomTrailing))
                     Image(systemName: "sparkles")
                         .font(.system(size: 15, weight: .black))
                         .foregroundStyle(.black.opacity(0.76))
@@ -1156,7 +1261,7 @@ struct BubbleView: View {
             }
 
             Text(service.gatewaySummary)
-                .font(.system(size: 12, weight: .medium))
+                .font(OperatorTheme.body(12))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
 
@@ -1210,6 +1315,9 @@ struct MainPanelView: View {
             .padding(14)
         }
         .frame(minWidth: 1120, minHeight: 720)
+        .foregroundStyle(OperatorTheme.ink)
+        .tint(OperatorTheme.carthaRed)
+        .font(OperatorTheme.body(13))
         .task { await service.refreshAll() }
     }
 }
@@ -1223,7 +1331,7 @@ struct SidebarView: View {
                 AnimatedLogo(size: 50)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Cartha")
-                        .font(.system(size: 24, weight: .black, design: .rounded))
+                        .font(OperatorTheme.display(24))
                     Text("Operator cockpit")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -1237,7 +1345,7 @@ struct SidebarView: View {
                         tab: tab,
                         selected: service.selectedTab == tab,
                         badge: badgeText(for: tab),
-                        badgeColor: tab == .approvals ? .purple : .orange
+                        badgeColor: tab == .approvals ? OperatorTheme.carthaRed : .orange
                     ) {
                         service.selectedTab = tab
                     }
@@ -1255,7 +1363,7 @@ struct SidebarView: View {
                         StatusPill(text: service.isStackReady ? "ready" : "check", color: service.isStackReady ? .green : .orange)
                     }
                     Text(service.gatewaySummary)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(OperatorTheme.body(12))
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
                     Text(service.wakeSummary)
@@ -1297,8 +1405,10 @@ struct SidebarView: View {
         }
         .padding(18)
         .frame(width: 270)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(.white.opacity(0.46)))
+        .background(LinearGradient(colors: [OperatorTheme.carthaDeep, OperatorTheme.carthaRed], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).stroke(.white.opacity(0.30)))
+        .foregroundStyle(.white)
+        .shadow(color: OperatorTheme.carthaDeep.opacity(0.24), radius: 28, x: 0, y: 16)
     }
 
     private func badgeText(for tab: NativeTab) -> String? {
@@ -1325,7 +1435,7 @@ struct SidebarNavItem: View {
             HStack(spacing: 11) {
                 Image(systemName: tab.icon).frame(width: 20)
                 Text(tab.title)
-                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .font(OperatorTheme.title(14))
                 Spacer()
                 if let badge {
                     Text(badge)
@@ -1340,8 +1450,9 @@ struct SidebarNavItem: View {
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
-        .background(selected ? Color.white.opacity(0.56) : Color.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(selected ? Color.white.opacity(0.8) : Color.white.opacity(0.16)))
+        .foregroundStyle(selected ? OperatorTheme.carthaRed : .white.opacity(0.90))
+        .background(selected ? OperatorTheme.paper : Color.white.opacity(0.13), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(selected ? Color.white.opacity(0.85) : Color.white.opacity(0.18)))
     }
 }
 
@@ -1353,7 +1464,7 @@ struct ContentPane: View {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(service.selectedTab.title)
-                        .font(.system(size: 32, weight: .black, design: .rounded))
+                        .font(OperatorTheme.display(32))
                     Text(service.selectedTab.subtitle)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.secondary)
@@ -1416,6 +1527,18 @@ struct ContentPane: View {
 
 // MARK: - Now dashboard
 
+struct HeroActionButton: View {
+    let title: String
+    let icon: String
+    var filled = false
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: icon).font(OperatorTheme.caption(12)).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 13).padding(.vertical, 10).background(filled ? .white : Color.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous)).foregroundStyle(filled ? OperatorTheme.carthaRed : .white)
+        }.buttonStyle(.plain)
+    }
+}
+
 struct NowView: View {
     @ObservedObject var service: HermesService
     private let columns = [GridItem(.adaptive(minimum: 230), spacing: 14)]
@@ -1423,40 +1546,39 @@ struct NowView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                GlassCard(padding: 22) {
-                    HStack(spacing: 18) {
-                        VStack(alignment: .leading, spacing: 9) {
-                            HStack(spacing: 8) {
-                                StatusPill(text: service.isStackReady ? "local stack ready" : "needs attention", color: service.isStackReady ? .green : .orange)
-                                StatusPill(text: service.wake?.active == true ? "voice on" : "voice muted", color: service.wake?.active == true ? .green : .secondary)
-                            }
-                            Text("Your local Cartha agent is ready to supervise work.")
-                                .font(.system(size: 28, weight: .black, design: .rounded))
-                                .lineLimit(2)
-                            Text("Ask for quick answers, queue durable tasks, review Apple upload gates, and keep an eye on local tool readiness from one native surface.")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(3)
+                HStack(spacing: 22) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            StatusPill(text: service.isStackReady ? "local stack ready" : "needs attention", color: .white)
+                            StatusPill(text: service.wake?.active == true ? "voice on" : "voice muted", color: .white)
                         }
-                        Spacer()
-                        VStack(spacing: 10) {
-                            Button { OperatorSound.navigate(); service.selectedTab = .operatorChat } label: { Label("Ask or run task", systemImage: "text.bubble") }
-                                .buttonStyle(.borderedProminent)
-                            Button { OperatorSound.navigate(); service.selectedTab = .research } label: { Label("Research room", systemImage: "magnifyingglass.circle") }
-                                .buttonStyle(.bordered)
-                            Button { OperatorSound.navigate(); service.selectedTab = .tasks } label: { Label("Review tasks", systemImage: "checklist") }
-                                .buttonStyle(.bordered)
-                            Button { OperatorSound.navigate(); service.selectedTab = .approvals } label: { Label("Apple approvals", systemImage: "checkmark.seal") }
-                                .buttonStyle(.bordered)
-                        }
+                        Text("Your local Cartha agent is ready to supervise work.")
+                            .font(OperatorTheme.display(29))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                        Text("Ask quick questions, queue durable tasks, review Apple upload gates, and keep local tool readiness visible from one native surface.")
+                            .font(OperatorTheme.body(14))
+                            .foregroundStyle(.white.opacity(0.84))
+                            .lineLimit(3)
                     }
+                    Spacer(minLength: 16)
+                    VStack(spacing: 10) {
+                        HeroActionButton(title: "Ask or run task", icon: "text.bubble", filled: true) { OperatorSound.navigate(); service.selectedTab = .operatorChat }
+                        HeroActionButton(title: "Research room", icon: "sparkle.magnifyingglass") { OperatorSound.navigate(); service.selectedTab = .research }
+                        HeroActionButton(title: "Review tasks", icon: "checklist") { OperatorSound.navigate(); service.selectedTab = .tasks }
+                        HeroActionButton(title: "Apple approvals", icon: "checkmark.seal") { OperatorSound.navigate(); service.selectedTab = .approvals }
+                    }.frame(width: 172)
                 }
+                .padding(24)
+                .background(LinearGradient(colors: [OperatorTheme.carthaHot, OperatorTheme.carthaRed, OperatorTheme.carthaDeep], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(.white.opacity(0.26), lineWidth: 1))
+                .shadow(color: OperatorTheme.carthaRed.opacity(0.24), radius: 26, x: 0, y: 15)
 
                 LazyVGrid(columns: columns, spacing: 14) {
                     MetricTile(title: "Gateway", value: service.status?.hermesGateway ?? "unknown", detail: service.status?.localAgentModel ?? "Hermes agent", icon: "network", color: service.status?.hermesGateway == "online" ? .green : .orange)
                     MetricTile(title: "Wake", value: service.wake?.active == true ? "Listening" : "Muted", detail: service.wakeSummary, icon: "waveform", color: service.wake?.active == true ? .green : .secondary)
                     MetricTile(title: "Active work", value: "\(service.runningTasks.count)", detail: "Queued, running, or awaiting approval", icon: "checklist", color: service.runningTasks.isEmpty ? .secondary : .orange)
-                    MetricTile(title: "Approvals", value: "\(service.pendingProposals.count)", detail: "Apple upload decisions pending", icon: "checkmark.seal", color: service.pendingProposals.isEmpty ? .green : .purple)
+                    MetricTile(title: "Approvals", value: "\(service.pendingProposals.count)", detail: "Apple upload decisions pending", icon: "checkmark.seal", color: service.pendingProposals.isEmpty ? .green : OperatorTheme.carthaRed)
                 }
 
                 HStack(alignment: .top, spacing: 14) {
@@ -1551,8 +1673,8 @@ struct OperatorView: View {
                     ScrollViewReader { proxy in
                         ScrollView {
                             LazyVStack(alignment: .leading, spacing: 12) {
-                                ForEach(service.messages) { message in
-                                    MessageBubble(message: message)
+                                ForEach($service.messages) { $message in
+                                    MessageBubble(message: $message)
                                         .id(message.id)
                                         .transition(.asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.96)).combined(with: .move(edge: message.role == "user" ? .trailing : .leading)), removal: .opacity))
                                 }
@@ -1568,14 +1690,7 @@ struct OperatorView: View {
                     Divider().opacity(0.35)
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Picker("Mode", selection: $mode) {
-                                ForEach(ComposerMode.allCases, id: \.self) { mode in
-                                    Text(mode.rawValue).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .frame(width: 220)
-                            .onChange(of: mode) { _ in OperatorSound.navigate() }
+                            ComposerModeSwitch(mode: $mode)
                             Text(mode == .ask ? "Immediate streaming answer" : "Durable task queue through Cartha autonomy")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
@@ -1592,8 +1707,10 @@ struct OperatorView: View {
                                 .textFieldStyle(.plain)
                                 .lineLimit(2...6)
                                 .padding(13)
-                                .background(.white.opacity(0.54), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.75)))
+                                .font(OperatorTheme.body(14))
+                                .foregroundStyle(OperatorTheme.ink)
+                                .background(OperatorTheme.paper, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(OperatorTheme.carthaRed.opacity(0.22)))
                                 .onSubmit { send() }
                             Button(action: send) {
                                 HStack {
@@ -1608,7 +1725,7 @@ struct OperatorView: View {
                     }
                     .padding(16)
                     .background(
-                        LinearGradient(colors: [Color.white.opacity(0.18), Color.cyan.opacity(0.08)], startPoint: .top, endPoint: .bottom)
+                        LinearGradient(colors: [OperatorTheme.blush.opacity(0.58), OperatorTheme.paperWarm], startPoint: .top, endPoint: .bottom)
                     )
                 }
             }
@@ -1625,6 +1742,19 @@ struct OperatorView: View {
         } else {
             Task { await service.submitTask(text) }
         }
+    }
+}
+
+struct ComposerModeSwitch: View {
+    @Binding var mode: ComposerMode
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(ComposerMode.allCases, id: \.self) { item in
+                Button { OperatorSound.navigate(); withAnimation(.spring(response: 0.24, dampingFraction: 0.84)) { mode = item } } label: {
+                    Text(item.rawValue).font(OperatorTheme.caption(12)).frame(width: 82).padding(.vertical, 8).background(mode == item ? OperatorTheme.carthaRed : OperatorTheme.paper, in: RoundedRectangle(cornerRadius: 10, style: .continuous)).foregroundStyle(mode == item ? .white : OperatorTheme.carthaRed)
+                }.buttonStyle(.plain)
+            }
+        }.padding(3).background(OperatorTheme.paperWarm, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
     }
 }
 
@@ -1663,52 +1793,58 @@ struct QuickPromptStrip: View {
 }
 
 struct MessageBubble: View {
-    let message: ChatMessage
-
+    @Binding var message: ChatMessage
     var body: some View {
         HStack(alignment: .bottom) {
             if message.role == "user" { Spacer(minLength: 80) }
-            VStack(alignment: .leading, spacing: 5) {
-                Text(label)
-                    .font(.caption2.weight(.black))
-                    .foregroundStyle(.secondary)
-                    .tracking(0.7)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(label).font(OperatorTheme.caption(10)).foregroundStyle(OperatorTheme.mutedInk).tracking(0.7)
                 if message.content.hasPrefix("Thinking locally") {
-                    HStack(spacing: 8) {
-                        Text("Thinking locally")
-                            .font(.system(size: 13.5, weight: .medium))
-                        TypingDots()
-                    }
+                    HStack(spacing: 8) { Text("Thinking locally").font(OperatorTheme.body(13.5)); TypingDots() }
                 } else {
-                    Text(message.content)
-                        .font(.system(size: 13.5, weight: .medium))
-                        .textSelection(.enabled)
-                        .lineSpacing(2)
+                    Text(message.content).font(OperatorTheme.body(13.5)).textSelection(.enabled).lineSpacing(2)
+                }
+                if message.role == "assistant", !message.activityEvents.isEmpty {
+                    Button { withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) { message.activityExpanded.toggle() } } label: {
+                        Label(message.activityExpanded ? "Hide activity" : "Show activity (\(message.activityEvents.count))", systemImage: message.activityExpanded ? "chevron.down.circle.fill" : "chevron.right.circle").font(OperatorTheme.caption(12))
+                    }.buttonStyle(.plain).foregroundStyle(OperatorTheme.carthaRed)
+                    if message.activityExpanded {
+                        VStack(alignment: .leading, spacing: 7) { ForEach(message.activityEvents) { ActivityEventRow(event: $0) } }
+                            .padding(10).background(OperatorTheme.paperWarm, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(OperatorTheme.carthaRed.opacity(0.16)))
+                    }
                 }
             }
             .padding(13)
             .background(background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.34)))
-            .shadow(color: .black.opacity(0.04), radius: 12, y: 6)
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(OperatorTheme.carthaRed.opacity(0.14)))
+            .shadow(color: OperatorTheme.carthaDeep.opacity(0.06), radius: 12, y: 6)
             if message.role != "user" { Spacer(minLength: 80) }
         }
     }
-
-    private var label: String {
-        switch message.role {
-        case "user": return "YOU"
-        case "system": return "SYSTEM"
-        default: return "CARTHA"
-        }
-    }
-
+    private var label: String { message.role == "user" ? "YOU" : (message.role == "system" ? "SYSTEM" : "CARTHA") }
     private var background: AnyShapeStyle {
         switch message.role {
-        case "user": return AnyShapeStyle(LinearGradient(colors: [.cyan.opacity(0.24), .mint.opacity(0.18)], startPoint: .topLeading, endPoint: .bottomTrailing))
-        case "system": return AnyShapeStyle(Color.purple.opacity(0.12))
-        default: return AnyShapeStyle(Color.white.opacity(0.58))
+        case "user": return AnyShapeStyle(LinearGradient(colors: [OperatorTheme.carthaRed.opacity(0.18), OperatorTheme.blush], startPoint: .topLeading, endPoint: .bottomTrailing))
+        case "system": return AnyShapeStyle(OperatorTheme.blush.opacity(0.72))
+        default: return AnyShapeStyle(OperatorTheme.paper)
         }
     }
+}
+
+struct ActivityEventRow: View {
+    let event: ActivityEvent
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon).font(.caption.weight(.bold)).foregroundStyle(color).frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(event.title).font(OperatorTheme.caption(12))
+                if !event.detail.isEmpty { Text(event.detail).font(OperatorTheme.body(11)).foregroundStyle(OperatorTheme.mutedInk).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+            }
+        }
+    }
+    private var icon: String { event.kind == "tool" ? "wrench.and.screwdriver" : (event.kind == "stats" ? "chart.bar" : (event.kind == "guardrail" ? "lock.shield" : "waveform.path.ecg")) }
+    private var color: Color { event.kind == "tool" ? .orange : (event.kind == "stats" ? .blue : (event.kind == "guardrail" ? OperatorTheme.carthaRed : OperatorTheme.mutedInk)) }
 }
 
 
@@ -1729,17 +1865,18 @@ struct ResearchRoomView: View {
                                 HStack(spacing: 8) {
                                     StatusPill(
                                         text: service.researchStatus?.searxng?.ready == true ? "local search ready" : "search warming",
-                                        color: service.researchStatus?.searxng?.ready == true ? .green : .orange
+                                        color: service.researchStatus?.searxng?.ready == true ? .green : .orange,
+                                        icon: "magnifyingglass"
                                     )
                                     if service.researchStatus?.cloudFallback == true {
-                                        StatusPill(text: "cloud fallback allowed", color: .purple)
+                                        StatusPill(text: "cloud fallback allowed", color: OperatorTheme.carthaRed, icon: "cloud")
                                     }
                                 }
                                 Text("Research Room")
-                                    .font(.system(size: 28, weight: .black, design: .rounded))
-                                Text("Search SearXNG, safely read public sources, then synthesize through the local Hermes model with citations.")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(.secondary)
+                                    .font(OperatorTheme.display(28))
+                                Text("Search SearXNG, read public sources, then synthesize through Hermes with citations.")
+                                    .font(OperatorTheme.body(14))
+                                    .foregroundStyle(OperatorTheme.mutedInk)
                             }
                             Spacer()
                             Button {
@@ -1753,7 +1890,11 @@ struct ResearchRoomView: View {
 
                         HStack(alignment: .center, spacing: 10) {
                             TextField("Ask a research question…", text: $query)
-                                .textFieldStyle(.roundedBorder)
+                                .textFieldStyle(.plain)
+                                .font(OperatorTheme.body(14))
+                                .padding(13)
+                                .background(OperatorTheme.paper, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(OperatorTheme.carthaRed.opacity(0.20)))
                                 .onSubmit { Task { await service.runResearch(query, mode: mode) } }
                             Picker("Depth", selection: $mode) {
                                 Text("Quick").tag("quick")
@@ -1779,12 +1920,12 @@ struct ResearchRoomView: View {
 
                         if let error = service.researchError {
                             Text("⚠️ \(error)")
-                                .font(.caption.weight(.semibold))
+                                .font(OperatorTheme.caption(12))
                                 .foregroundStyle(.red)
                         } else if let status = service.researchStatus {
                             Text("\(status.searxng?.url ?? "SearXNG") · \(status.model ?? "local model") · saved to \(status.runsPath ?? "~/.hermes/research-room")")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                                .font(OperatorTheme.caption(12))
+                                .foregroundStyle(OperatorTheme.mutedInk)
                                 .lineLimit(2)
                         }
                     }
@@ -1795,7 +1936,7 @@ struct ResearchRoomView: View {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
                                 Text("Recent runs")
-                                    .font(.headline)
+                                    .font(OperatorTheme.title(17))
                                 Spacer()
                                 Button("Refresh") {
                                     OperatorSound.navigate()
@@ -1826,23 +1967,30 @@ struct ResearchRoomView: View {
                                 HStack(alignment: .top) {
                                     VStack(alignment: .leading, spacing: 5) {
                                         Text(run.title ?? run.query)
-                                            .font(.system(size: 20, weight: .black, design: .rounded))
+                                            .font(OperatorTheme.title(20))
                                         Text("\(run.mode ?? "quick") · \(run.backend ?? "backend") · \(run.model ?? "model") · \(run.durationMs.map { "\($0) ms" } ?? "latest")")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(.secondary)
+                                            .font(OperatorTheme.caption(12))
+                                            .foregroundStyle(OperatorTheme.mutedInk)
                                     }
                                     Spacer()
                                     StatusPill(text: run.status ?? "unknown", color: statusColor(run.status))
                                 }
                                 Text(run.answer ?? "No answer captured yet.")
-                                    .font(.system(size: 13.5, weight: .medium))
+                                    .font(OperatorTheme.body(13.5))
                                     .textSelection(.enabled)
                                     .lineSpacing(3)
                                 Divider().opacity(0.35)
                                 Text("Sources")
-                                    .font(.headline)
-                                ForEach(Array((run.sources ?? []).prefix(8))) { source in
-                                    ResearchSourceRow(source: source)
+                                    .font(OperatorTheme.title(17))
+                                let sources = Array((run.sources ?? []).prefix(8))
+                                if sources.isEmpty {
+                                    Text("No source rows captured yet.")
+                                        .font(OperatorTheme.body(12))
+                                        .foregroundStyle(OperatorTheme.mutedInk)
+                                } else {
+                                    ForEach(sources) { source in
+                                        ResearchSourceRow(source: source)
+                                    }
                                 }
                             }
                         } else {
@@ -1874,18 +2022,18 @@ struct ResearchRunSummary: View {
                     .fill(statusColor(run.status))
                     .frame(width: 8, height: 8)
                 Text(run.title ?? run.query)
-                    .font(.system(size: 13, weight: .bold))
+                    .font(OperatorTheme.caption(13))
                     .lineLimit(2)
                 Spacer()
             }
             Text("\(run.status ?? "done") · \(relativeTime(run.updatedAt ?? run.createdAt)) · \((run.sources ?? []).count) sources")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OperatorTheme.body(11))
+                .foregroundStyle(OperatorTheme.mutedInk)
                 .lineLimit(1)
         }
         .padding(11)
-        .background(selected ? Color.white.opacity(0.58) : Color.white.opacity(0.22), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(selected ? Color.cyan.opacity(0.5) : Color.white.opacity(0.18)))
+        .background(selected ? OperatorTheme.blush.opacity(0.92) : OperatorTheme.paperWarm, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous).stroke(selected ? OperatorTheme.carthaRed.opacity(0.45) : OperatorTheme.hairline))
     }
 }
 
@@ -1899,14 +2047,15 @@ struct ResearchSourceRow: View {
                     .font(.caption2.bold())
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Color.cyan.opacity(0.16), in: Capsule())
+                    .background(OperatorTheme.carthaRed.opacity(0.12), in: Capsule())
+                    .foregroundStyle(OperatorTheme.carthaRed)
                 if let urlText = source.url, let url = URL(string: urlText) {
                     Link(source.title ?? source.host ?? urlText, destination: url)
-                        .font(.system(size: 13, weight: .bold))
+                        .font(OperatorTheme.caption(13))
                         .lineLimit(1)
                 } else {
                     Text(source.title ?? source.host ?? "Source")
-                        .font(.system(size: 13, weight: .bold))
+                        .font(OperatorTheme.caption(13))
                         .lineLimit(1)
                 }
                 Spacer()
@@ -1916,12 +2065,13 @@ struct ResearchSourceRow: View {
                 }
             }
             Text(source.excerpt ?? source.snippet ?? source.error ?? "No source excerpt available.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(OperatorTheme.body(12))
+                .foregroundStyle(OperatorTheme.mutedInk)
                 .lineLimit(3)
         }
         .padding(11)
-        .background(Color.white.opacity(0.22), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(OperatorTheme.paperWarm, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(OperatorTheme.hairline))
     }
 }
 
@@ -2070,9 +2220,9 @@ struct TaskHistorySheet: View {
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: "text.bubble.fill")
                     .font(.system(size: 20, weight: .bold))
-                    .foregroundStyle(.cyan)
+                    .foregroundStyle(OperatorTheme.carthaRed)
                     .frame(width: 42, height: 42)
-                    .background(.cyan.opacity(0.14), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(OperatorTheme.carthaRed.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                 VStack(alignment: .leading, spacing: 5) {
                     Text(title)
                         .font(.system(size: 22, weight: .black, design: .rounded))
@@ -2190,7 +2340,7 @@ struct TaskHistoryContent: View {
                 }
             }
             .padding(16)
-            .background(.ultraThinMaterial)
+            .background(OperatorTheme.paperWarm)
         }
     }
 }
@@ -2287,9 +2437,9 @@ struct ProposalCard: View {
             VStack(alignment: .leading, spacing: 11) {
                 HStack(spacing: 10) {
                     Image(systemName: "shippingbox.and.arrow.backward")
-                        .foregroundStyle(.purple)
+                        .foregroundStyle(OperatorTheme.carthaRed)
                         .frame(width: 38, height: 38)
-                        .background(.purple.opacity(0.12), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                        .background(OperatorTheme.carthaRed.opacity(0.12), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(proposal.channel_label ?? "Apple upload")
                             .font(.headline)
@@ -2298,7 +2448,7 @@ struct ProposalCard: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    StatusPill(text: proposal.status ?? "pending", color: proposal.status == "pending" ? .purple : statusColor(proposal.status))
+                    StatusPill(text: proposal.status ?? "pending", color: proposal.status == "pending" ? OperatorTheme.carthaRed : statusColor(proposal.status))
                 }
                 Text(proposal.subject ?? "Untitled commit")
                     .font(.system(size: compact ? 13 : 15, weight: .bold))
@@ -2428,7 +2578,7 @@ struct WakeView: View {
                             .foregroundStyle(service.wake?.active == true ? .green : .secondary)
                         VStack(alignment: .leading, spacing: 7) {
                             Text(service.wakeSummary)
-                                .font(.system(size: 24, weight: .black, design: .rounded))
+                                .font(OperatorTheme.display(24))
                             Text(service.wake?.toggleText ?? "Wake status is loading.")
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(.secondary)
