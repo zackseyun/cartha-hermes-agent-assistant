@@ -7,6 +7,7 @@ A batteries-included local AI assistant stack for macOS, built on the open-sourc
 - **Cartha Hermes native Swift app** as the primary user surface: top-right Swift bubble, native operator panel, wake controls, approvals, and embedded Workspace bridge.
 - **Hermes Workspace** on `127.0.0.1:3000` for the richer chat/workspace UI while capabilities are progressively ported into Swift.
 - **Small local operator console/API** on `127.0.0.1:5128` for status checks, native app APIs, image tests, and smoke-testing the agent path.
+- **Delegation-enabled API agent** on the native/API surface, so Hermes can call `delegate_task` and run up to three parallel child agents by default.
 - **Autonomous heartbeat custodian** that runs every 30 min — system observability, idle-app cleanup proposals, factual web search, and pending-task triage. Local-first; only escalates to the cloud "senior" model for genuine multi-step reasoning.
 - **Self-hosted SearXNG** web search backend on `127.0.0.1:8888` so the heartbeat can answer factual questions without OpenRouter calls.
 - **launchd service templates** so the stack survives terminal closes and reboots.

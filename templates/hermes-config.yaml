@@ -16,6 +16,7 @@ platform_toolsets:
     - terminal
     - file
     - todo
+    - delegation
 terminal:
   backend: local
   cwd: ~/Documents/GitHub

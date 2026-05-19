@@ -212,7 +212,7 @@ cfg['fallback_providers']=[{
     'base_url': 'https://openrouter.ai/api/v1',
     'key_env': 'OPENROUTER_API_KEY',
 }]
-cfg.setdefault('platform_toolsets', {})['api_server']=['terminal','file','todo']
+cfg.setdefault('platform_toolsets', {})['api_server']=['terminal','file','todo','delegation']
 terminal=cfg.setdefault('terminal', {})
 terminal['backend']='local'
 terminal['cwd']=opts['workspaceCwd']
