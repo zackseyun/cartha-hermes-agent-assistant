@@ -792,15 +792,11 @@ final class HermesService: ObservableObject {
         let startedAt = Date()
         let modelName = status?.localAgentModel ?? status?.hermesModel ?? "local agent"
         let runtimeName = status?.localModelRuntime ?? (modelName.contains("mlx") || modelName.contains("Qwen3.6") ? "MLX local" : "local")
-        let base = status?.localModelBase ?? status?.hermesApiBase ?? "Hermes gateway"
         messages.append(ChatMessage(role: "user", content: trimmed))
         messages.append(ChatMessage(role: "assistant", content: "Generating locally…", activityEvents: [
-            ActivityEvent(key: "local-model", kind: "stats", title: "Local model", detail: "\(modelName) · \(runtimeName) · \(base)"),
-            ActivityEvent(key: "reasoning-visibility", kind: "guardrail", title: "Reasoning visibility", detail: "Qwen raw <think> tokens are disabled for the fast default agent, and private hidden reasoning is not displayed. This view shows local routing, elapsed time, stream progress, tool calls, visible output, and final usage when the backend provides it."),
-            ActivityEvent(key: "adaptive-thinking", kind: "stats", title: "Planner effort request", detail: "Hermes requested \(adaptiveThinking.displayEffort) effort · \(adaptiveThinking.reason)."),
-            ActivityEvent(key: "request", kind: "status", title: "Request sent", detail: "Local request is open; waiting for first stream event…"),
-            ActivityEvent(key: "elapsed", kind: "stats", title: "Elapsed", detail: "0.0s waiting locally")
-        ], activityExpanded: true))
+            ActivityEvent(key: "local-model", kind: "stats", title: "Local model", detail: "\(modelName) · \(runtimeName)"),
+            ActivityEvent(key: "elapsed", kind: "stats", title: "Elapsed", detail: "0.0s")
+        ]))
         let assistantIndex = messages.count - 1
         var firstVisibleAt: Date?
         var sseEvents = 0
@@ -810,7 +806,7 @@ final class HermesService: ObservableObject {
                 await MainActor.run {
                     guard let self, self.messages.indices.contains(assistantIndex), self.messages[assistantIndex].content.hasPrefix("Generating locally") else { return }
                     let elapsed = Date().timeIntervalSince(startedAt)
-                    self.mergeActivityEvent(ActivityEvent(key: "elapsed", kind: "stats", title: "Elapsed", detail: String(format: "%.1fs waiting locally · %d stream event%@", elapsed, sseEvents, sseEvents == 1 ? "" : "s")), intoMessageAt: assistantIndex)
+                    self.mergeActivityEvent(ActivityEvent(key: "elapsed", kind: "stats", title: "Elapsed", detail: String(format: "%.1fs · %d chunk%@", elapsed, sseEvents, sseEvents == 1 ? "" : "s")), intoMessageAt: assistantIndex)
                 }
             }
         }
@@ -845,7 +841,7 @@ final class HermesService: ObservableObject {
                 if line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("data:") {
                     sseEvents += 1
                     let elapsed = Date().timeIntervalSince(startedAt)
-                    mergeActivityEvent(ActivityEvent(key: "stream-stats", kind: "stats", title: "Stream stats", detail: String(format: "%.1fs · %d SSE event%@ · %d visible character%@", elapsed, sseEvents, sseEvents == 1 ? "" : "s", reply.count, reply.count == 1 ? "" : "s")), intoMessageAt: assistantIndex)
+                    mergeActivityEvent(ActivityEvent(key: "stream-stats", kind: "stats", title: "Stream stats", detail: String(format: "%.1fs · %d chunk%@ · %d char%@", elapsed, sseEvents, sseEvents == 1 ? "" : "s", reply.count, reply.count == 1 ? "" : "s")), intoMessageAt: assistantIndex)
                 }
                 for event in patch.activityEvents { mergeActivityEvent(event, intoMessageAt: assistantIndex) }
                 if !patch.visibleDelta.isEmpty {
@@ -1858,7 +1854,7 @@ struct OperatorView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             ComposerModeSwitch(mode: $mode)
-                            Text(mode == .ask ? "Local MLX answer with live activity" : "Durable task queue through Cartha autonomy")
+                            Text(mode == .ask ? "Local MLX answer" : "Durable task queue through Cartha autonomy")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                             Spacer()
@@ -1969,20 +1965,22 @@ struct MessageBubble: View {
                 if message.content.hasPrefix("Thinking locally") || message.content.hasPrefix("Generating locally") {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 8) { Text("Generating locally").font(OperatorTheme.body(13.5)); TypingDots() }
-                        Text("Local MLX/Hermes stream is active. The activity panel shows model, routing, elapsed time, stream events, tool calls, and usage when available.")
-                            .font(OperatorTheme.body(11))
-                            .foregroundStyle(OperatorTheme.mutedInk)
-                            .fixedSize(horizontal: false, vertical: true)
+                        if let status = compactLocalStatus {
+                            Text(status)
+                                .font(OperatorTheme.body(11))
+                                .foregroundStyle(OperatorTheme.mutedInk)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 } else {
                     Text(message.content).font(OperatorTheme.body(13.5)).textSelection(.enabled).lineSpacing(2)
                 }
-                if message.role == "assistant", !message.activityEvents.isEmpty {
+                if message.role == "assistant", !displayEvents.isEmpty {
                     Button { withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) { message.activityExpanded.toggle() } } label: {
-                        Label(message.activityExpanded ? "Hide local activity" : "Show local activity (\(message.activityEvents.count))", systemImage: message.activityExpanded ? "chevron.down.circle.fill" : "chevron.right.circle").font(OperatorTheme.caption(12))
+                        Label(message.activityExpanded ? "Hide details" : "Show details (\(displayEvents.count))", systemImage: message.activityExpanded ? "chevron.down.circle.fill" : "chevron.right.circle").font(OperatorTheme.caption(12))
                     }.buttonStyle(.plain).foregroundStyle(OperatorTheme.carthaRed)
                     if message.activityExpanded {
-                        VStack(alignment: .leading, spacing: 7) { ForEach(message.activityEvents) { ActivityEventRow(event: $0) } }
+                        VStack(alignment: .leading, spacing: 7) { ForEach(displayEvents) { ActivityEventRow(event: $0) } }
                             .padding(10).background(OperatorTheme.paperWarm, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                             .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(OperatorTheme.carthaRed.opacity(0.16)))
                     }
@@ -1995,6 +1993,25 @@ struct MessageBubble: View {
             if message.role != "user" { Spacer(minLength: 80) }
         }
     }
+    private var compactLocalStatus: String? {
+        let model = message.activityEvents.first(where: { $0.key == "local-model" })?.detail
+        let elapsed = message.activityEvents.first(where: { $0.key == "elapsed" })?.detail
+        let stream = message.activityEvents.first(where: { $0.key == "stream-stats" })?.detail
+        let bits = [model, stream ?? elapsed].compactMap { value -> String? in
+            guard let value else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return bits.isEmpty ? nil : bits.joined(separator: " · ")
+    }
+
+    private var displayEvents: [ActivityEvent] {
+        message.activityEvents.filter { event in
+            if event.kind == "tool" || event.kind == "error" { return true }
+            return ["usage", "finish", "done-signal"].contains(event.key)
+        }
+    }
+
     private var label: String { message.role == "user" ? "YOU" : (message.role == "system" ? "SYSTEM" : "CARTHA") }
     private var background: AnyShapeStyle {
         switch message.role {
