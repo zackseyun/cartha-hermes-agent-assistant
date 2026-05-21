@@ -20,7 +20,8 @@
     "native:install-launch-agent": "bash scripts/install-native-launch-agent.sh",
     "mobile:bridge": "node scripts/mobile-bridge.mjs",
     "mobile:configure": "node scripts/configure-mobile-bridge.mjs",
-    "mobile:install-launch-agent": "node scripts/install-mobile-bridge-launch-agent.mjs"
+    "mobile:install-launch-agent": "node scripts/install-mobile-bridge-launch-agent.mjs",
+    "mobile:deploy-ios": "node scripts/deploy-hermes-iphone.mjs"
   },
   "engines": {
     "node": ">=20"

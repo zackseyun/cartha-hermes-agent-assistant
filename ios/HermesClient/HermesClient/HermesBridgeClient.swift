@@ -36,23 +36,31 @@ struct DispatchResponse: Decodable {
 @MainActor
 final class HermesBridgeClient: ObservableObject {
     @Published var statusMessage = "Not connected"
+    @Published var isConnected = false
+    @Published var isBusy = false
     @Published var lastImage: UIImage?
     @Published var isStreaming = false
 
     func health(baseURL: String, token: String) async {
+        isBusy = true
+        defer { isBusy = false }
         do {
             var request = try makeRequest(baseURL: baseURL, path: "/health", token: token)
             request.httpMethod = "GET"
             let (data, response) = try await URLSession.shared.data(for: request)
             try validate(response: response, data: data)
             let health = try JSONDecoder().decode(BridgeHealth.self, from: data)
+            isConnected = health.ok
             statusMessage = health.ok ? "Bridge online" : "Bridge unavailable"
         } catch {
+            isConnected = false
             statusMessage = "Health failed: \(error.localizedDescription)"
         }
     }
 
     func dispatch(baseURL: String, token: String, command: String, mode: DispatchMode) async {
+        isBusy = true
+        defer { isBusy = false }
         do {
             var request = try makeRequest(baseURL: baseURL, path: "/dispatch", token: token)
             request.httpMethod = "POST"
@@ -66,16 +74,20 @@ final class HermesBridgeClient: ObservableObject {
             try validate(response: response, data: data)
             let payload = try JSONDecoder().decode(DispatchResponse.self, from: data)
             if payload.ok {
+                isConnected = true
                 statusMessage = payload.message ?? payload.stdout ?? "Dispatched"
             } else {
                 statusMessage = payload.error ?? "Dispatch failed"
             }
         } catch {
+            isConnected = false
             statusMessage = "Dispatch failed: \(error.localizedDescription)"
         }
     }
 
     func refreshScreen(baseURL: String, token: String) async {
+        isBusy = true
+        defer { isBusy = false }
         do {
             var components = URLComponents(string: normalized(baseURL) + "/screen.jpg")
             components?.queryItems = [URLQueryItem(name: "width", value: "1100")]
@@ -87,8 +99,10 @@ final class HermesBridgeClient: ObservableObject {
             try validate(response: response, data: data)
             guard let image = UIImage(data: data) else { throw BridgeError.badImage }
             lastImage = image
+            isConnected = true
             statusMessage = "Screen refreshed"
         } catch {
+            isConnected = false
             statusMessage = "Screen failed: \(error.localizedDescription)"
         }
     }
