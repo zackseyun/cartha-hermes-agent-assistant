@@ -2148,6 +2148,23 @@ function normalizeMessages(value) {
     .filter(Boolean);
 }
 
+function withVisualOutputGuidance(messages) {
+  return [
+    {
+      role: "system",
+      content: [
+        "Cartha Hermes native can render visual output directly.",
+        "When a visual explanation helps, prefer Markdown tables, concise ASCII diagrams, or fenced code blocks.",
+        "For diagrams, use fenced ```mermaid or plain ASCII; the app will show the source clearly.",
+        "For images/screenshots/files that already exist locally, include a Markdown image on its own line: ![short caption](/absolute/path/to/image.png) or ![short caption](file:///absolute/path/to/image.png).",
+        "For generated visual artifacts, save them under ~/.hermes/visuals when tools are available, then include the absolute Markdown image link.",
+        "Do not merely say you can show a visual; render the table/diagram/code/image link in the answer when useful.",
+      ].join(" "),
+    },
+    ...messages,
+  ];
+}
+
 function messagesContainAudio(messages) {
   return messages.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "input_audio"));
 }
@@ -2329,6 +2346,7 @@ async function proxyChat(req, res) {
     body.reasoning_effort || body.reasoningEffort || body.thinking_level || body.thinkingLevel || "",
   );
   const reasoningPayload = reasoningPayloadForEffort(reasoningSelection.effort);
+  const visualMessages = withVisualOutputGuidance(messages);
 
   const backend = body.backend === "ollama" ? "ollama" : DEFAULT_BACKEND;
   const requestedBackend = body.backend === "openrouter" ? "openrouter" : backend;
@@ -2351,7 +2369,7 @@ async function proxyChat(req, res) {
       },
       {
         model: OPENROUTER_SMALL_MODEL,
-        messages,
+        messages: visualMessages,
         stream: true,
         temperature: 0.2,
         max_tokens: 2048,
@@ -2379,7 +2397,7 @@ async function proxyChat(req, res) {
         "X-Hermes-Reasoning-Effort": reasoningSelection.effort,
         "X-Cartha-Adaptive-Thinking": `${reasoningSelection.source}; ${reasoningSelection.reason}`.slice(0, 220),
       },
-      { model: HERMES_MODEL, messages, stream: true, ...reasoningPayload },
+      { model: HERMES_MODEL, messages: visualMessages, stream: true, ...reasoningPayload },
     );
   }
 
@@ -2399,7 +2417,7 @@ async function proxyChat(req, res) {
     { "Content-Type": "application/json", Accept: "text/event-stream" },
     {
       model: OLLAMA_MODEL,
-      messages,
+      messages: visualMessages,
       stream: true,
       temperature: 0.2,
       max_tokens: 4096,

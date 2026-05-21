@@ -1972,6 +1972,235 @@ struct QuickPromptStrip: View {
     }
 }
 
+
+struct RichMessageContent: View {
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            ForEach(VisualContentParser.parse(text)) { block in
+                switch block.kind {
+                case .text:
+                    MarkdownText(block.text)
+                case .code:
+                    CodeBlockView(language: block.language, code: block.text)
+                case .image:
+                    VisualImageView(alt: block.alt, rawURL: block.text)
+                }
+            }
+        }
+    }
+}
+
+struct MarkdownText: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        if let attributed = try? AttributedString(markdown: text) {
+            Text(attributed)
+                .font(OperatorTheme.body(13.5))
+                .textSelection(.enabled)
+                .lineSpacing(2)
+        } else {
+            Text(text)
+                .font(OperatorTheme.body(13.5))
+                .textSelection(.enabled)
+                .lineSpacing(2)
+        }
+    }
+}
+
+struct CodeBlockView: View {
+    let language: String?
+    let code: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let language, !language.isEmpty {
+                Label(language.lowercased() == "mermaid" ? "Mermaid diagram source" : language.uppercased(), systemImage: language.lowercased() == "mermaid" ? "point.3.connected.trianglepath.dotted" : "chevron.left.forwardslash.chevron.right")
+                    .font(OperatorTheme.caption(10))
+                    .foregroundStyle(OperatorTheme.mutedInk)
+            }
+            ScrollView(.horizontal, showsIndicators: true) {
+                Text(code)
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(OperatorTheme.paperWarm.opacity(0.78), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(OperatorTheme.carthaRed.opacity(0.14)))
+        }
+    }
+}
+
+struct VisualImageView: View {
+    let alt: String?
+    let rawURL: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let url = resolvedURL {
+                if url.isFileURL, let image = NSImage(contentsOf: url) {
+                    SwiftUI.Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxHeight: 420)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(OperatorTheme.carthaRed.opacity(0.16)))
+                    caption(url: url)
+                } else if !url.isFileURL {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .empty:
+                            HStack { ProgressView().controlSize(.small); Text("Loading visual…") }
+                                .font(OperatorTheme.body(12))
+                                .foregroundStyle(OperatorTheme.mutedInk)
+                                .padding(12)
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxHeight: 420)
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(OperatorTheme.carthaRed.opacity(0.16)))
+                        case .failure:
+                            missingVisual(url: url)
+                        @unknown default:
+                            missingVisual(url: url)
+                        }
+                    }
+                    caption(url: url)
+                } else {
+                    missingVisual(url: url)
+                }
+            } else {
+                Text("Visual: \(rawURL)")
+                    .font(OperatorTheme.body(12))
+                    .foregroundStyle(OperatorTheme.mutedInk)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func caption(url: URL) -> some View {
+        HStack(spacing: 8) {
+            Label(alt?.isEmpty == false ? alt! : "Visual", systemImage: "photo")
+            Text(url.isFileURL ? url.path : url.absoluteString)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .font(OperatorTheme.caption(11))
+        .foregroundStyle(OperatorTheme.mutedInk)
+        .textSelection(.enabled)
+    }
+
+    @ViewBuilder
+    private func missingVisual(url: URL) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label("Visual could not be loaded", systemImage: "photo.badge.exclamationmark")
+                .font(OperatorTheme.caption(12))
+                .foregroundStyle(OperatorTheme.carthaRed)
+            Text(url.isFileURL ? url.path : url.absoluteString)
+                .font(OperatorTheme.body(11))
+                .foregroundStyle(OperatorTheme.mutedInk)
+                .textSelection(.enabled)
+        }
+        .padding(10)
+        .background(OperatorTheme.paperWarm.opacity(0.8), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var resolvedURL: URL? {
+        var value = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("<"), value.hasSuffix(">") { value = String(value.dropFirst().dropLast()) }
+        value = value.removingPercentEncoding ?? value
+        if value.hasPrefix("file://") { return URL(string: value) }
+        if value.hasPrefix("http://") || value.hasPrefix("https://") { return URL(string: value) }
+        if value.hasPrefix("/") { return URL(fileURLWithPath: value) }
+        if value.hasPrefix("~") {
+            let expanded = NSString(string: value).expandingTildeInPath
+            return URL(fileURLWithPath: expanded)
+        }
+        return nil
+    }
+}
+
+struct VisualBlock: Identifiable {
+    enum Kind { case text, code, image }
+    let id = UUID()
+    let kind: Kind
+    let text: String
+    let language: String?
+    let alt: String?
+}
+
+enum VisualContentParser {
+    static func parse(_ input: String) -> [VisualBlock] {
+        var blocks: [VisualBlock] = []
+        var textBuffer: [String] = []
+        var codeBuffer: [String] = []
+        var inCode = false
+        var codeLanguage: String?
+
+        func flushText() {
+            let text = textBuffer.joined(separator: "\n").trimmingCharacters(in: .newlines)
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                blocks.append(VisualBlock(kind: .text, text: text, language: nil, alt: nil))
+            }
+            textBuffer.removeAll()
+        }
+
+        func flushCode() {
+            blocks.append(VisualBlock(kind: .code, text: codeBuffer.joined(separator: "\n"), language: codeLanguage, alt: nil))
+            codeBuffer.removeAll()
+            codeLanguage = nil
+        }
+
+        for line in input.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") {
+                if inCode {
+                    flushCode()
+                    inCode = false
+                } else {
+                    flushText()
+                    inCode = true
+                    codeLanguage = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                continue
+            }
+
+            if inCode {
+                codeBuffer.append(line)
+                continue
+            }
+
+            if let image = markdownImage(from: trimmed), image.consumesWholeLine {
+                flushText()
+                blocks.append(VisualBlock(kind: .image, text: image.url, language: nil, alt: image.alt))
+            } else {
+                textBuffer.append(line)
+            }
+        }
+
+        if inCode { flushCode() }
+        flushText()
+        if blocks.isEmpty { blocks.append(VisualBlock(kind: .text, text: input, language: nil, alt: nil)) }
+        return blocks
+    }
+
+    private static func markdownImage(from line: String) -> (alt: String, url: String, consumesWholeLine: Bool)? {
+        guard line.hasPrefix("!["), let closeAlt = line.firstIndex(of: "]") else { return nil }
+        let afterAlt = line[line.index(after: closeAlt)...]
+        guard afterAlt.hasPrefix("("), line.hasSuffix(")") else { return nil }
+        let alt = String(line[line.index(line.startIndex, offsetBy: 2)..<closeAlt])
+        let urlStart = afterAlt.index(after: afterAlt.startIndex)
+        let url = String(afterAlt[urlStart..<afterAlt.index(before: afterAlt.endIndex)])
+        return (alt, url, true)
+    }
+}
+
 struct MessageBubble: View {
     @Binding var message: ChatMessage
     var body: some View {
@@ -1990,7 +2219,7 @@ struct MessageBubble: View {
                         }
                     }
                 } else {
-                    Text(message.content).font(OperatorTheme.body(13.5)).textSelection(.enabled).lineSpacing(2)
+                    RichMessageContent(text: message.content)
                 }
                 if message.role == "assistant", !displayEvents.isEmpty {
                     Button { withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) { message.activityExpanded.toggle() } } label: {
