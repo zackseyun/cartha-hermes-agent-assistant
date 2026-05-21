@@ -11,6 +11,7 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = Number.parseInt(process.env.HERMES_UI_PORT || "5128", 10);
 const HOST = process.env.HERMES_UI_HOST || "127.0.0.1";
 const HERMES_API_BASE = (process.env.HERMES_API_BASE || "http://127.0.0.1:8642/v1").replace(/\/+$/u, "");
+const MLX_API_BASE = (process.env.MLX_API_BASE || "http://127.0.0.1:8080/v1").replace(/\/+$/u, "");
 const OLLAMA_API_BASE = (process.env.OLLAMA_API_BASE || "http://127.0.0.1:11434/v1").replace(/\/+$/u, "");
 const OPENROUTER_API_BASE = (process.env.OPENROUTER_API_BASE || "https://openrouter.ai/api/v1").replace(/\/+$/u, "");
 const HERMES_MODEL = process.env.HERMES_MODEL || "hermes-agent";
@@ -2153,12 +2154,12 @@ function withVisualOutputGuidance(messages) {
     {
       role: "system",
       content: [
+        "Answer in clean, well-spaced Markdown with short paragraphs or bullets; never run headings together with body text.",
+        "Be direct and useful first. Do not claim you are running scripts or grabbing context unless a real tool call/result is available in the conversation.",
         "Cartha Hermes native can render visual output directly.",
-        "When a visual explanation helps, prefer Markdown tables, concise ASCII diagrams, or fenced code blocks.",
-        "For diagrams, use fenced ```mermaid or plain ASCII; the app will show the source clearly.",
+        "When a visual explanation helps, use Markdown tables, concise ASCII diagrams, fenced code blocks, or fenced ```mermaid diagrams.",
         "For images/screenshots/files that already exist locally, include a Markdown image on its own line: ![short caption](/absolute/path/to/image.png) or ![short caption](file:///absolute/path/to/image.png).",
         "For generated visual artifacts, save them under ~/.hermes/visuals when tools are available, then include the absolute Markdown image link.",
-        "Do not merely say you can show a visual; render the table/diagram/code/image link in the answer when useful.",
       ].join(" "),
     },
     ...messages,
@@ -2231,6 +2232,7 @@ async function buildStatusPayload() {
     backend: DEFAULT_BACKEND,
     ollamaApiBase: OLLAMA_API_BASE,
     hermesApiBase: HERMES_API_BASE,
+    mlxApiBase: MLX_API_BASE,
     localModelStatus,
     localModelRuntime,
     localModelBase,
@@ -2349,7 +2351,7 @@ async function proxyChat(req, res) {
   const visualMessages = withVisualOutputGuidance(messages);
 
   const backend = body.backend === "ollama" ? "ollama" : DEFAULT_BACKEND;
-  const requestedBackend = body.backend === "openrouter" ? "openrouter" : backend;
+  const requestedBackend = body.backend === "openrouter" ? "openrouter" : (body.backend === "mlx" || body.backend === "local-mlx" ? "mlx" : backend);
   if (requestedBackend === "openrouter") {
     if (messagesContainAttachments(messages)) {
       return sendError(res, 400, "DeepSeek V4 Flash is text-only in this route", "Use Gemma 4 31B for image attachments, or send text-only prompts to DeepSeek V4 Flash.");
@@ -2374,6 +2376,26 @@ async function proxyChat(req, res) {
         temperature: 0.2,
         max_tokens: 2048,
         reasoning: { enabled: false },
+      },
+    );
+  }
+
+  if (requestedBackend === "mlx") {
+    const localModel = await getHermesLocalModel();
+    return proxyStreamingRequest(
+      req,
+      res,
+      `${MLX_API_BASE}/chat/completions`,
+      {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      {
+        model: localModel,
+        messages: visualMessages,
+        stream: true,
+        temperature: 0.2,
+        max_tokens: Number(body.max_tokens || body.maxTokens || 1600),
       },
     );
   }

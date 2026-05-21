@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 enum NativeLog {
@@ -478,9 +479,16 @@ struct ActivityEvent: Identifiable, Equatable {
     }
 }
 
+struct TokenUsage: Equatable {
+    let prompt: Int?
+    let completion: Int?
+    let total: Int?
+}
+
 struct StreamPatch {
     var visibleDelta = ""
     var activityEvents: [ActivityEvent] = []
+    var usage: TokenUsage?
 }
 
 struct ChatMessage: Identifiable, Equatable {
@@ -575,6 +583,8 @@ final class HermesService: ObservableObject {
         ChatMessage(role: "system", content: "Cartha Operator is ready. Ask a quick question, or switch the composer to Run Task for durable agent work.")
     ]
     @Published var queuedAskPrompts: [String] = []
+    @Published var contextUsedTokens = 0
+    @Published var contextLimitTokens = 262_144
     @Published var isSending = false
     @Published var isSubmittingTask = false
     @Published var lastError: String?
@@ -601,6 +611,39 @@ final class HermesService: ObservableObject {
 
     var isStackReady: Bool {
         status?.ok == true || status?.hermesGateway == "online" || status?.localModelStatus == "online"
+    }
+
+    var contextCompactThresholdTokens: Int { Int(Double(contextLimitTokens) * 0.86) }
+
+    var contextFraction: Double {
+        guard contextLimitTokens > 0 else { return 0 }
+        return min(1, max(0, Double(contextUsedTokens) / Double(contextLimitTokens)))
+    }
+
+    var contextSummary: String {
+        let used = contextUsedTokens > 0 ? formatTokenCount(contextUsedTokens) : "estimating"
+        let limit = formatTokenCount(contextLimitTokens)
+        let compact = formatTokenCount(contextCompactThresholdTokens)
+        return "Context \(used) / \(limit) · compact around \(compact)"
+    }
+
+    func updateContextEstimate() {
+        let chars = messages.reduce(0) { total, message in total + message.content.count }
+        let estimate = max(contextUsedTokens, chars / 4)
+        contextUsedTokens = min(contextLimitTokens, estimate)
+    }
+
+    func updateTokenUsage(_ usage: TokenUsage) {
+        if let total = usage.total {
+            contextUsedTokens = min(contextLimitTokens, max(contextUsedTokens, total))
+        } else if let prompt = usage.prompt {
+            contextUsedTokens = min(contextLimitTokens, max(contextUsedTokens, prompt + (usage.completion ?? 0)))
+        }
+    }
+
+    private func formatTokenCount(_ value: Int) -> String {
+        if value >= 1000 { return String(format: "%.1fk", Double(value) / 1000.0) }
+        return "\(value)"
     }
 
     func refreshAll() async {
@@ -800,6 +843,7 @@ final class HermesService: ObservableObject {
         let modelName = status?.localAgentModel ?? status?.hermesModel ?? "local agent"
         let runtimeName = status?.localModelRuntime ?? (modelName.contains("mlx") || modelName.contains("Qwen3.6") ? "MLX local" : "local")
         messages.append(ChatMessage(role: "user", content: trimmed))
+        updateContextEstimate()
         messages.append(ChatMessage(role: "assistant", content: "Generating locally…", activityEvents: [
             ActivityEvent(key: "local-model", kind: "stats", title: "Local model", detail: "\(modelName) · \(runtimeName)"),
             ActivityEvent(key: "elapsed", kind: "stats", title: "Elapsed", detail: "0.0s")
@@ -833,7 +877,7 @@ final class HermesService: ObservableObject {
                 .dropLast()
                 .suffix(12)
                 .map { WireMessage(role: $0.role, content: $0.content) }
-            let body = ChatRequest(backend: "hermes", messages: Array(history) + [WireMessage(role: "user", content: trimmed)], reasoningEffort: adaptiveThinking.effort)
+            let body = ChatRequest(backend: "mlx", messages: Array(history) + [WireMessage(role: "user", content: trimmed)], reasoningEffort: adaptiveThinking.effort)
             request.httpBody = try JSONEncoder().encode(body)
             request.timeoutInterval = 120
             let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -854,6 +898,7 @@ final class HermesService: ObservableObject {
                     let elapsed = Date().timeIntervalSince(startedAt)
                     mergeActivityEvent(ActivityEvent(key: "stream-stats", kind: "stats", title: "Stream stats", detail: String(format: "%.1fs · %d chunk%@ · %d char%@", elapsed, sseEvents, sseEvents == 1 ? "" : "s", reply.count, reply.count == 1 ? "" : "s")), intoMessageAt: assistantIndex)
                 }
+                if let usage = patch.usage { updateTokenUsage(usage) }
                 for event in patch.activityEvents { mergeActivityEvent(event, intoMessageAt: assistantIndex) }
                 if !patch.visibleDelta.isEmpty {
                     if reply.isEmpty {
@@ -864,6 +909,7 @@ final class HermesService: ObservableObject {
                     }
                     reply += patch.visibleDelta
                     if messages.indices.contains(assistantIndex) { messages[assistantIndex].content = reply }
+                    updateContextEstimate()
                 }
             }
             if reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1090,7 +1136,14 @@ final class HermesService: ObservableObject {
             }
             if let text = first["text"] as? String { patch.visibleDelta += text }
         }
-        if let usage = json["usage"] as? [String: Any] { patch.activityEvents.append(ActivityEvent(key: "usage", kind: "stats", title: "Token usage", detail: stringifyJSON(usage))) }
+        if let usage = json["usage"] as? [String: Any] {
+            patch.activityEvents.append(ActivityEvent(key: "usage", kind: "stats", title: "Token usage", detail: stringifyJSON(usage)))
+            patch.usage = TokenUsage(
+                prompt: usage["prompt_tokens"] as? Int,
+                completion: usage["completion_tokens"] as? Int,
+                total: usage["total_tokens"] as? Int
+            )
+        }
         for key in ["tool_call", "tool_result", "tool_results", "tool_outputs", "tool_output"] {
             if let value = json[key] { patch.activityEvents.append(ActivityEvent(key: "raw-\(key)", kind: "tool", title: key.replacingOccurrences(of: "_", with: " ").capitalized, detail: stringifyJSON(value))) }
         }
@@ -1845,6 +1898,7 @@ struct OperatorView: View {
     @ObservedObject var service: HermesService
     @State private var prompt = ""
     @State private var mode: ComposerMode = .ask
+    @State private var pasteStatus: String?
 
     var body: some View {
         VStack(spacing: 14) {
@@ -1871,17 +1925,27 @@ struct OperatorView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             ComposerModeSwitch(mode: $mode)
-                            Text(mode == .ask ? "Local MLX answer" : "Durable task queue through Cartha autonomy")
+                            Text(mode == .ask ? "Fast local MLX answer" : "Durable Hermes task queue")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                             Spacer()
                             Button("Clear") {
                                 OperatorSound.navigate()
                                 service.messages = [ChatMessage(role: "system", content: "New Cartha Operator session. Ask quickly or queue durable work.")]
+                                service.queuedAskPrompts = []
+                                service.contextUsedTokens = 0
+                                pasteStatus = nil
                             }
                             .buttonStyle(.bordered)
                         }
                         // Quick preview prompts removed: the Ask surface now stays focused on direct input and live local transparency.
+                        ContextWindowMeter(service: service)
+                        if let pasteStatus {
+                            Text(pasteStatus)
+                                .font(OperatorTheme.caption(11))
+                                .foregroundStyle(OperatorTheme.mutedInk)
+                                .lineLimit(2)
+                        }
                         HStack(alignment: .bottom, spacing: 10) {
                             TextField(mode == .ask ? "Ask Cartha something…" : "Tell Cartha what to keep working on…", text: $prompt, axis: .vertical)
                                 .textFieldStyle(.plain)
@@ -1892,6 +1956,9 @@ struct OperatorView: View {
                                 .background(OperatorTheme.paper, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                                 .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(OperatorTheme.carthaRed.opacity(0.22)))
                                 .onSubmit { send() }
+                                .onPasteCommand(of: VisualPasteStore.supportedTypes) { providers in
+                                    pasteVisuals(providers)
+                                }
                             Button(action: send) {
                                 HStack {
                                     if service.isSending || service.isSubmittingTask { ProgressView().controlSize(.small) }
@@ -1912,16 +1979,175 @@ struct OperatorView: View {
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 24)
+        .onPasteCommand(of: VisualPasteStore.supportedTypes) { providers in
+            pasteVisuals(providers)
+        }
+    }
+
+    private func pasteVisuals(_ providers: [NSItemProvider]) {
+        Task {
+            do {
+                let markdowns = try await VisualPasteStore.saveVisuals(from: providers)
+                await MainActor.run {
+                    guard !markdowns.isEmpty else { return }
+                    let insertion = markdowns.joined(separator: "\n")
+                    prompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? insertion : "\(prompt)\n\(insertion)"
+                    pasteStatus = markdowns.count == 1 ? "Attached visual to prompt." : "Attached \(markdowns.count) visuals to prompt."
+                }
+            } catch {
+                await MainActor.run { pasteStatus = "Could not attach visual: \(error.localizedDescription)" }
+            }
+        }
     }
 
     private func send() {
         let text = prompt
         prompt = ""
+        pasteStatus = nil
         if mode == .ask {
             Task { await service.send(text) }
         } else {
             Task { await service.submitTask(text) }
         }
+    }
+}
+
+
+struct ContextWindowMeter: View {
+    @ObservedObject var service: HermesService
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Text(service.contextSummary)
+                    .font(OperatorTheme.caption(11).weight(.semibold))
+                    .foregroundStyle(color)
+                Spacer()
+                Text(compactStatus)
+                    .font(OperatorTheme.caption(10))
+                    .foregroundStyle(color)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(OperatorTheme.carthaRed.opacity(0.10))
+                    Capsule().fill(color.opacity(0.75)).frame(width: max(6, geo.size.width * service.contextFraction))
+                    Rectangle().fill(.orange.opacity(0.8)).frame(width: 2).offset(x: max(0, min(geo.size.width - 2, geo.size.width * 0.82)))
+                }
+            }
+            .frame(height: 5)
+        }
+    }
+
+    private var compactStatus: String {
+        if service.contextUsedTokens <= 0 { return "usage appears after first reply" }
+        if service.contextUsedTokens >= service.contextCompactThresholdTokens { return "near compact" }
+        return "room left: \(format(max(0, service.contextCompactThresholdTokens - service.contextUsedTokens)))"
+    }
+
+    private var color: Color {
+        if service.contextUsedTokens >= service.contextCompactThresholdTokens { return .orange }
+        if service.contextFraction > 0.65 { return OperatorTheme.carthaRed }
+        return OperatorTheme.mutedInk
+    }
+
+    private func format(_ value: Int) -> String {
+        value >= 1000 ? String(format: "%.1fk", Double(value) / 1000.0) : "\(value)"
+    }
+}
+
+enum VisualPasteStore {
+    static let supportedTypes: [UTType] = [.image, .png, .jpeg, .tiff, .fileURL]
+
+    static func saveVisuals(from providers: [NSItemProvider]) async throws -> [String] {
+        var markdowns: [String] = []
+        for provider in providers {
+            if let markdown = try await saveVisual(from: provider) {
+                markdowns.append(markdown)
+            }
+        }
+        return markdowns
+    }
+
+    private static func saveVisual(from provider: NSItemProvider) async throws -> String? {
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier),
+           let data = try await loadData(provider, typeIdentifier: UTType.fileURL.identifier),
+           let source = URL(dataRepresentation: data, relativeTo: nil),
+           isImageURL(source) {
+            let copied = try copyImageFile(source)
+            return "![pasted image](\(copied.path))"
+        }
+
+        for type in [UTType.png, UTType.jpeg, UTType.tiff, UTType.image] {
+            guard provider.hasItemConformingToTypeIdentifier(type.identifier),
+                  let data = try await loadData(provider, typeIdentifier: type.identifier),
+                  !data.isEmpty else { continue }
+            let saved = try saveImageData(data, preferredType: type)
+            return "![pasted image](\(saved.path))"
+        }
+        return nil
+    }
+
+    private static func loadData(_ provider: NSItemProvider, typeIdentifier: String) async throws -> Data? {
+        try await withCheckedThrowingContinuation { continuation in
+            provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: data) }
+            }
+        }
+    }
+
+    private static func visualsDirectory() throws -> URL {
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".hermes", isDirectory: true)
+            .appendingPathComponent("visuals", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private static func saveImageData(_ data: Data, preferredType: UTType) throws -> URL {
+        let ext = fileExtension(for: preferredType, data: data)
+        let url = try visualsDirectory().appendingPathComponent("paste-\(timestamp())-\(UUID().uuidString.prefix(8)).\(ext)")
+        if ext == "png", let image = NSImage(data: data), let png = pngData(from: image) {
+            try png.write(to: url, options: .atomic)
+        } else {
+            try data.write(to: url, options: .atomic)
+        }
+        return url
+    }
+
+    private static func copyImageFile(_ source: URL) throws -> URL {
+        let ext = source.pathExtension.isEmpty ? "png" : source.pathExtension.lowercased()
+        let destination = try visualsDirectory().appendingPathComponent("paste-\(timestamp())-\(UUID().uuidString.prefix(8)).\(ext)")
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.copyItem(at: source, to: destination)
+        return destination
+    }
+
+    private static func isImageURL(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        let ext = url.pathExtension.lowercased()
+        return ["png", "jpg", "jpeg", "gif", "tif", "tiff", "heic", "webp", "bmp"].contains(ext)
+    }
+
+    private static func fileExtension(for type: UTType, data: Data) -> String {
+        if type.conforms(to: .png) { return "png" }
+        if type.conforms(to: .jpeg) { return "jpg" }
+        if type.conforms(to: .tiff) { return "tiff" }
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "png" }
+        if data.starts(with: [0xFF, 0xD8]) { return "jpg" }
+        return "png"
+    }
+
+    private static func pngData(from image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
+    private static func timestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: Date())
     }
 }
 
@@ -2253,8 +2479,7 @@ struct MessageBubble: View {
 
     private var displayEvents: [ActivityEvent] {
         message.activityEvents.filter { event in
-            if event.kind == "tool" || event.kind == "error" { return true }
-            return ["usage", "finish", "done-signal"].contains(event.key)
+            event.kind == "tool" || event.kind == "error"
         }
     }
 
