@@ -58,6 +58,11 @@ struct HermesStatus: Decodable {
     let hermesGateway: String?
     let agentStatus: String?
     let gemmaStatus: String?
+    let localModelStatus: String?
+    let localModelRuntime: String?
+    let localModelBase: String?
+    let hermesApiBase: String?
+    let ollamaApiBase: String?
     let model: String?
     let localAgentModel: String?
     let agentModel: String?
@@ -582,9 +587,9 @@ final class HermesService: ObservableObject {
 
     var gatewaySummary: String {
         let gateway = status?.hermesGateway ?? "unknown"
-        let local = status?.gemmaStatus ?? "unknown"
         let primary = status?.localAgentModel ?? status?.hermesModel ?? "local agent"
-        return "Gateway \(gateway) · \(primary) · \(local)"
+        let runtime = status?.localModelRuntime ?? (primary.contains("mlx") || primary.contains("Qwen3.6") ? "MLX local" : "local")
+        return "Gateway \(gateway) · \(primary) · \(runtime)"
     }
 
     var wakeSummary: String {
@@ -594,7 +599,7 @@ final class HermesService: ObservableObject {
     }
 
     var isStackReady: Bool {
-        status?.ok == true || status?.hermesGateway == "online" || status?.gemmaStatus == "ollama online"
+        status?.ok == true || status?.hermesGateway == "online" || status?.localModelStatus == "online"
     }
 
     func refreshAll() async {
@@ -784,15 +789,33 @@ final class HermesService: ObservableObject {
         guard !trimmed.isEmpty, !isSending else { return }
         OperatorSound.send()
         let adaptiveThinking = AdaptiveThinking.select(for: trimmed)
+        let startedAt = Date()
+        let modelName = status?.localAgentModel ?? status?.hermesModel ?? "local agent"
+        let runtimeName = status?.localModelRuntime ?? (modelName.contains("mlx") || modelName.contains("Qwen3.6") ? "MLX local" : "local")
+        let base = status?.localModelBase ?? status?.hermesApiBase ?? "Hermes gateway"
         messages.append(ChatMessage(role: "user", content: trimmed))
-        messages.append(ChatMessage(role: "assistant", content: "Thinking locally…", activityEvents: [
-            ActivityEvent(key: "privacy", kind: "guardrail", title: "Activity view ready", detail: "Shows live stream events, tool calls, status, and token-ish chunk counts. Private hidden reasoning is not exposed."),
-            ActivityEvent(key: "adaptive-thinking", kind: "stats", title: "Adaptive thinking", detail: "Selected \(adaptiveThinking.displayEffort) thinking · \(adaptiveThinking.reason)."),
-            ActivityEvent(key: "request", kind: "status", title: "Request sent to local Hermes", detail: "Waiting for stream events…")
-        ]))
+        messages.append(ChatMessage(role: "assistant", content: "Generating locally…", activityEvents: [
+            ActivityEvent(key: "local-model", kind: "stats", title: "Local model", detail: "\(modelName) · \(runtimeName) · \(base)"),
+            ActivityEvent(key: "reasoning-visibility", kind: "guardrail", title: "Reasoning visibility", detail: "Qwen raw <think> tokens are disabled for the fast default agent, and private hidden reasoning is not displayed. This view shows local routing, elapsed time, stream progress, tool calls, visible output, and final usage when the backend provides it."),
+            ActivityEvent(key: "adaptive-thinking", kind: "stats", title: "Planner effort request", detail: "Hermes requested \(adaptiveThinking.displayEffort) effort · \(adaptiveThinking.reason)."),
+            ActivityEvent(key: "request", kind: "status", title: "Request sent", detail: "Local request is open; waiting for first stream event…"),
+            ActivityEvent(key: "elapsed", kind: "stats", title: "Elapsed", detail: "0.0s waiting locally")
+        ], activityExpanded: true))
         let assistantIndex = messages.count - 1
+        var firstVisibleAt: Date?
+        var sseEvents = 0
+        let progressTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                await MainActor.run {
+                    guard let self, self.messages.indices.contains(assistantIndex), self.messages[assistantIndex].content.hasPrefix("Generating locally") else { return }
+                    let elapsed = Date().timeIntervalSince(startedAt)
+                    self.mergeActivityEvent(ActivityEvent(key: "elapsed", kind: "stats", title: "Elapsed", detail: String(format: "%.1fs waiting locally · %d stream event%@", elapsed, sseEvents, sseEvents == 1 ? "" : "s")), intoMessageAt: assistantIndex)
+                }
+            }
+        }
         isSending = true
-        defer { isSending = false }
+        defer { isSending = false; progressTask.cancel() }
 
         do {
             var request = URLRequest(url: endpoint("/api/chat"))
@@ -816,19 +839,21 @@ final class HermesService: ObservableObject {
             }
             var reply = ""
             var raw = ""
-            var sseEvents = 0
             for try await line in bytes.lines {
                 raw += line + "\n"
                 let patch = Self.patchFromSSELine(line)
                 if line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("data:") {
                     sseEvents += 1
-                    mergeActivityEvent(ActivityEvent(key: "stream-stats", kind: "stats", title: "Stream stats", detail: "\(sseEvents) SSE event\(sseEvents == 1 ? "" : "s") · \(reply.count) visible character\(reply.count == 1 ? "" : "s") streamed"), intoMessageAt: assistantIndex)
+                    let elapsed = Date().timeIntervalSince(startedAt)
+                    mergeActivityEvent(ActivityEvent(key: "stream-stats", kind: "stats", title: "Stream stats", detail: String(format: "%.1fs · %d SSE event%@ · %d visible character%@", elapsed, sseEvents, sseEvents == 1 ? "" : "s", reply.count, reply.count == 1 ? "" : "s")), intoMessageAt: assistantIndex)
                 }
                 for event in patch.activityEvents { mergeActivityEvent(event, intoMessageAt: assistantIndex) }
                 if !patch.visibleDelta.isEmpty {
                     if reply.isEmpty {
+                        firstVisibleAt = Date()
                         messages[assistantIndex].content = ""
-                        mergeActivityEvent(ActivityEvent(key: "answer", kind: "answer", title: "Answer stream started", detail: "Visible response text is now streaming into the chat bubble."), intoMessageAt: assistantIndex)
+                        let elapsed = firstVisibleAt?.timeIntervalSince(startedAt) ?? Date().timeIntervalSince(startedAt)
+                        mergeActivityEvent(ActivityEvent(key: "first-token", kind: "answer", title: "First visible token", detail: String(format: "Visible answer started after %.1fs.", elapsed)), intoMessageAt: assistantIndex)
                     }
                     reply += patch.visibleDelta
                     if messages.indices.contains(assistantIndex) { messages[assistantIndex].content = reply }
@@ -1833,7 +1858,7 @@ struct OperatorView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             ComposerModeSwitch(mode: $mode)
-                            Text(mode == .ask ? "Immediate streaming answer" : "Durable task queue through Cartha autonomy")
+                            Text(mode == .ask ? "Local MLX answer with live activity" : "Durable task queue through Cartha autonomy")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                             Spacer()
@@ -1843,7 +1868,7 @@ struct OperatorView: View {
                             }
                             .buttonStyle(.bordered)
                         }
-                        QuickPromptStrip(prompt: $prompt, mode: $mode)
+                        // Quick preview prompts removed: the Ask surface now stays focused on direct input and live local transparency.
                         HStack(alignment: .bottom, spacing: 10) {
                             TextField(mode == .ask ? "Ask Cartha something…" : "Tell Cartha what to keep working on…", text: $prompt, axis: .vertical)
                                 .textFieldStyle(.plain)
@@ -1857,7 +1882,7 @@ struct OperatorView: View {
                             Button(action: send) {
                                 HStack {
                                     if service.isSending || service.isSubmittingTask { ProgressView().controlSize(.small) }
-                                    Text(mode == .ask ? (service.isSending ? "Thinking…" : "Ask") : (service.isSubmittingTask ? "Queueing…" : "Run Task"))
+                                    Text(mode == .ask ? (service.isSending ? "Generating…" : "Ask") : (service.isSubmittingTask ? "Queueing…" : "Run Task"))
                                 }
                             }
                             .buttonStyle(.borderedProminent)
@@ -1941,14 +1966,20 @@ struct MessageBubble: View {
             if message.role == "user" { Spacer(minLength: 80) }
             VStack(alignment: .leading, spacing: 8) {
                 Text(label).font(OperatorTheme.caption(10)).foregroundStyle(OperatorTheme.mutedInk).tracking(0.7)
-                if message.content.hasPrefix("Thinking locally") {
-                    HStack(spacing: 8) { Text("Thinking locally").font(OperatorTheme.body(13.5)); TypingDots() }
+                if message.content.hasPrefix("Thinking locally") || message.content.hasPrefix("Generating locally") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) { Text("Generating locally").font(OperatorTheme.body(13.5)); TypingDots() }
+                        Text("Local MLX/Hermes stream is active. The activity panel shows model, routing, elapsed time, stream events, tool calls, and usage when available.")
+                            .font(OperatorTheme.body(11))
+                            .foregroundStyle(OperatorTheme.mutedInk)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 } else {
                     Text(message.content).font(OperatorTheme.body(13.5)).textSelection(.enabled).lineSpacing(2)
                 }
                 if message.role == "assistant", !message.activityEvents.isEmpty {
                     Button { withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) { message.activityExpanded.toggle() } } label: {
-                        Label(message.activityExpanded ? "Hide activity" : "Show activity (\(message.activityEvents.count))", systemImage: message.activityExpanded ? "chevron.down.circle.fill" : "chevron.right.circle").font(OperatorTheme.caption(12))
+                        Label(message.activityExpanded ? "Hide local activity" : "Show local activity (\(message.activityEvents.count))", systemImage: message.activityExpanded ? "chevron.down.circle.fill" : "chevron.right.circle").font(OperatorTheme.caption(12))
                     }.buttonStyle(.plain).foregroundStyle(OperatorTheme.carthaRed)
                     if message.activityExpanded {
                         VStack(alignment: .leading, spacing: 7) { ForEach(message.activityEvents) { ActivityEventRow(event: $0) } }

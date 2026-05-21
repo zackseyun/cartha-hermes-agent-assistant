@@ -1645,10 +1645,10 @@ async function readToolCapabilities(statusPayload = null, wakePayload = null) {
     {
       id: "local_model",
       label: "Local model",
-      status: status?.gemmaStatus === "ollama online" ? "ready" : "offline",
-      ready: status?.gemmaStatus === "ollama online",
+      status: status?.localModelStatus === "online" || status?.hermesGateway === "online" ? "ready" : "offline",
+      ready: status?.localModelStatus === "online" || status?.hermesGateway === "online",
       icon: "cpu",
-      detail: status?.localAgentModel || status?.model || "Local model not detected",
+      detail: status?.localAgentModel || status?.hermesModel || status?.model || "Local model not detected",
     },
     {
       id: "wake",
@@ -2202,21 +2202,26 @@ async function buildStatusPayload() {
     gemmaStatus = "ollama offline";
   }
 
-  // Hermes is now local-first: the stack is healthy when the local gateway
-  // or local Ollama runner is reachable. OpenRouter is only an optional fallback
-  // credential and should not make the native Swift surface look broken.
-  const stackHealthy = hermesGateway === "online" || gemmaStatus === "ollama online" || agentStatus === "online";
+  // Hermes is now local-first: the stack is healthy when the local Hermes
+  // gateway is reachable. Ollama/Gemma may be absent when MLX is the runner.
+  const localModelStatus = hermesGateway === "online" ? "online" : "offline";
+  const localModelRuntime = /mlx|Qwen3\.6/iu.test(localAgentModel || HERMES_MODEL) ? "MLX local" : "Hermes local";
+  const localModelBase = HERMES_API_BASE;
+  const stackHealthy = localModelStatus === "online" || agentStatus === "online";
 
   return {
     ok: stackHealthy,
     backend: DEFAULT_BACKEND,
     ollamaApiBase: OLLAMA_API_BASE,
     hermesApiBase: HERMES_API_BASE,
+    localModelStatus,
+    localModelRuntime,
+    localModelBase,
     openRouterApiBase: OPENROUTER_API_BASE,
     hermesGateway,
     agentStatus,
     gemmaStatus,
-    model: OLLAMA_MODEL,
+    model: localAgentModel || HERMES_MODEL,
     localAgentModel,
     agentModel: OPENROUTER_AGENT_MODEL,
     smallModel: OPENROUTER_SMALL_MODEL,
