@@ -574,6 +574,7 @@ final class HermesService: ObservableObject {
     @Published var messages: [ChatMessage] = [
         ChatMessage(role: "system", content: "Cartha Operator is ready. Ask a quick question, or switch the composer to Run Task for durable agent work.")
     ]
+    @Published var queuedAskPrompts: [String] = []
     @Published var isSending = false
     @Published var isSubmittingTask = false
     @Published var lastError: String?
@@ -786,7 +787,13 @@ final class HermesService: ObservableObject {
 
     func send(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isSending else { return }
+        guard !trimmed.isEmpty else { return }
+        if isSending {
+            queuedAskPrompts.append(trimmed)
+            messages.append(ChatMessage(role: "system", content: "↪️ Queued next Ask: \(trimmed)"))
+            OperatorSound.navigate()
+            return
+        }
         OperatorSound.send()
         let adaptiveThinking = AdaptiveThinking.select(for: trimmed)
         let startedAt = Date()
@@ -811,7 +818,11 @@ final class HermesService: ObservableObject {
             }
         }
         isSending = true
-        defer { isSending = false; progressTask.cancel() }
+        defer {
+            isSending = false
+            progressTask.cancel()
+            drainQueuedAskIfNeeded()
+        }
 
         do {
             var request = URLRequest(url: endpoint("/api/chat"))
@@ -873,6 +884,12 @@ final class HermesService: ObservableObject {
             OperatorSound.warning()
             lastError = error.localizedDescription
         }
+    }
+
+    private func drainQueuedAskIfNeeded() {
+        guard !isSending, !queuedAskPrompts.isEmpty else { return }
+        let next = queuedAskPrompts.removeFirst()
+        Task { await send(next) }
     }
 
     private func mergeActivityEvent(_ event: ActivityEvent, intoMessageAt index: Int) {
@@ -1878,11 +1895,11 @@ struct OperatorView: View {
                             Button(action: send) {
                                 HStack {
                                     if service.isSending || service.isSubmittingTask { ProgressView().controlSize(.small) }
-                                    Text(mode == .ask ? (service.isSending ? "Generating…" : "Ask") : (service.isSubmittingTask ? "Queueing…" : "Run Task"))
+                                    Text(mode == .ask ? (service.isSending ? "Queue Ask" : "Ask") : (service.isSubmittingTask ? "Queueing…" : "Run Task"))
                                 }
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled((mode == .ask ? service.isSending : service.isSubmittingTask) || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .disabled((mode == .task && service.isSubmittingTask) || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             .keyboardShortcut(.return, modifiers: [.command])
                         }
                     }
