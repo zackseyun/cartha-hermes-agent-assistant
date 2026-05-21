@@ -17,7 +17,10 @@
     "reset:openrouter": "node scripts/reset-openrouter-pool.mjs",
     "native:build": "bash scripts/build-native-app.sh",
     "native:open": "bash scripts/open-native-app.sh",
-    "native:install-launch-agent": "bash scripts/install-native-launch-agent.sh"
+    "native:install-launch-agent": "bash scripts/install-native-launch-agent.sh",
+    "mobile:bridge": "node scripts/mobile-bridge.mjs",
+    "mobile:configure": "node scripts/configure-mobile-bridge.mjs",
+    "mobile:install-launch-agent": "node scripts/install-mobile-bridge-launch-agent.mjs"
   },
   "engines": {
     "node": ">=20"
