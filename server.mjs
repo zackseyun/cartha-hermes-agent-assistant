@@ -2382,6 +2382,18 @@ async function proxyChat(req, res) {
 
   if (requestedBackend === "mlx") {
     const localModel = await getHermesLocalModel();
+    const localSystem = {
+      role: "system",
+      content: [
+        "You are Cartha's fast local agent running on Apple Silicon via MLX.",
+        "Answer with final user-facing content only; never reveal hidden reasoning, thinking traces, scratchpads, or chain-of-thought.",
+        "Be concise, useful, and format with clean Markdown bullets when helpful.",
+        "If the user asks for visual output, you may use Markdown tables, ASCII diagrams, Mermaid fenced blocks, or Markdown image links to local/remote files.",
+      ].join(" "),
+    };
+    const localMessages = visualMessages[0]?.role === "system"
+      ? visualMessages
+      : [localSystem, ...visualMessages];
     return proxyStreamingRequest(
       req,
       res,
@@ -2392,10 +2404,11 @@ async function proxyChat(req, res) {
       },
       {
         model: localModel,
-        messages: visualMessages,
+        messages: localMessages,
         stream: true,
-        temperature: 0.2,
+        temperature: 0.15,
         max_tokens: Number(body.max_tokens || body.maxTokens || 1600),
+        chat_template_kwargs: { enable_thinking: false },
       },
     );
   }
