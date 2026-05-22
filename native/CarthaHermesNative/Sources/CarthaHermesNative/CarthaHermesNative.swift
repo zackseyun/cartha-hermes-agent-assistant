@@ -583,6 +583,8 @@ final class HermesService: ObservableObject {
         ChatMessage(role: "system", content: "Cartha Operator is ready. Ask a quick question, or switch the composer to Run Task for durable agent work.")
     ]
     @Published var queuedAskPrompts: [String] = []
+    @Published var activeTaskThreadMessageIDs: [String: UUID] = [:]
+    private var taskThreadWatchers: Set<String> = []
     @Published var contextUsedTokens = 0
     @Published var contextLimitTokens = 262_144
     @Published var isSending = false
@@ -961,19 +963,156 @@ final class HermesService: ObservableObject {
         OperatorSound.send()
         isSubmittingTask = true
         defer { isSubmittingTask = false }
+
+        messages.append(ChatMessage(role: "user", content: trimmed))
+        updateContextEstimate()
+
+        let placeholder = ChatMessage(role: "assistant", content: "Queued durable Hermes task. I’ll keep this thread updated here as the operator works.", activityEvents: [
+            ActivityEvent(key: "task-status", kind: "tool", title: "Durable task", detail: "Submitting to Hermes task queue…")
+        ])
+        messages.append(placeholder)
+        let assistantMessageID = placeholder.id
+
         do {
             let request = TaskSubmitRequest(task: trimmed, title: "Cartha Operator task", source: "native-operator", mode: "task")
             let response = try await postJSON(TaskSubmitResponse.self, path: "/api/operator/tasks", body: request)
-            let confirmation = response.message ?? "Cartha queued this as durable agent work."
-            messages.append(ChatMessage(role: "system", content: "✅ \(confirmation)"))
+            let taskID = response.task?.id ?? response.id ?? ""
+            updateTaskThreadMessage(
+                id: assistantMessageID,
+                content: "✅ \(response.message ?? "Cartha queued this as durable agent work.")\n\nI’ll post the operator’s result back into this same thread when it finishes.",
+                status: response.status ?? response.task?.status ?? "queued",
+                detail: taskID.isEmpty ? "Queued, but no task id was returned yet." : "Task id: \(taskID)"
+            )
             OperatorSound.success()
             lastError = nil
             await refreshOverview()
+            if !taskID.isEmpty {
+                activeTaskThreadMessageIDs[taskID] = assistantMessageID
+                startTaskThreadWatcher(taskID: taskID, messageID: assistantMessageID, taskText: trimmed)
+            }
         } catch {
-            messages.append(ChatMessage(role: "system", content: "⚠️ Could not queue task: \(error.localizedDescription)"))
+            updateTaskThreadMessage(
+                id: assistantMessageID,
+                content: "⚠️ Could not queue task: \(error.localizedDescription)",
+                status: "failed",
+                detail: error.localizedDescription
+            )
             OperatorSound.warning()
             lastError = "Task: \(error.localizedDescription)"
         }
+    }
+
+    private func startTaskThreadWatcher(taskID: String, messageID: UUID, taskText: String) {
+        guard !taskThreadWatchers.contains(taskID) else { return }
+        taskThreadWatchers.insert(taskID)
+        Task { [weak self] in
+            await self?.watchTaskThread(taskID: taskID, messageID: messageID, taskText: taskText)
+        }
+    }
+
+    private func watchTaskThread(taskID: String, messageID: UUID, taskText: String) async {
+        defer {
+            taskThreadWatchers.remove(taskID)
+            activeTaskThreadMessageIDs.removeValue(forKey: taskID)
+        }
+
+        for attempt in 0..<90 {
+            try? await Task.sleep(nanoseconds: attempt < 8 ? 2_000_000_000 : 5_000_000_000)
+            guard !Task.isCancelled else { return }
+
+            do {
+                let response = try await getJSON(TaskResponse.self, path: "/api/operator/tasks")
+                tasks = response.tasks
+                let task = response.tasks.first { item in
+                    item.id == taskID || item.sessionId == taskID || item.sessionFile == taskID || item.sessionPath == taskID
+                }
+                let status = task?.status ?? "queued"
+                let history = try? await getJSON(
+                    TaskHistoryResponse.self,
+                    url: endpoint("/api/operator/task-history", queryItems: [URLQueryItem(name: "id", value: taskID)])
+                )
+
+                if let finalReply = latestVisibleAssistantReply(in: history) {
+                    updateTaskThreadMessage(
+                        id: messageID,
+                        content: finalReply,
+                        status: status,
+                        detail: task?.detail ?? history?.session?.path ?? "Transcript linked."
+                    )
+                    if isTerminalTaskStatus(status) {
+                        OperatorSound.receive()
+                        return
+                    }
+                } else {
+                    updateTaskThreadMessage(
+                        id: messageID,
+                        content: taskProgressText(task: task, status: status, taskText: taskText, history: history),
+                        status: status,
+                        detail: task?.detail ?? history?.note ?? "Waiting for the operator transcript…"
+                    )
+                }
+
+                if isTerminalTaskStatus(status) {
+                    OperatorSound.receive()
+                    return
+                }
+            } catch {
+                updateTaskThreadMessage(
+                    id: messageID,
+                    content: "Hermes task is still queued, but I could not refresh its status yet. You can also open it from the Tasks tab.",
+                    status: "refreshing",
+                    detail: error.localizedDescription
+                )
+            }
+        }
+
+        updateTaskThreadMessage(
+            id: messageID,
+            content: "This durable task is still running or waiting in the background. I’ll keep it visible in Tasks; hit Refresh to pick up the final transcript.",
+            status: "running",
+            detail: "Watcher timed out after a few minutes."
+        )
+    }
+
+    private func updateTaskThreadMessage(id: UUID, content: String, status: String, detail: String) {
+        guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
+        messages[index].content = content
+        mergeActivityEvent(
+            ActivityEvent(key: "task-status", kind: status == "completed" ? "done" : "tool", title: "Durable task · \(status)", detail: detail),
+            intoMessageAt: index
+        )
+        updateContextEstimate()
+    }
+
+    private func latestVisibleAssistantReply(in history: TaskHistoryResponse?) -> String? {
+        guard let history else { return nil }
+        return history.messages.reversed().first { message in
+            message.role == "assistant" && !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }?.content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func taskProgressText(task: HarnessTask?, status: String, taskText: String, history: TaskHistoryResponse?) -> String {
+        switch status {
+        case "queued":
+            return "Queued durable task. Hermes has it, but the operator has not written a response transcript yet.\n\n**Task:** \(taskText)"
+        case "running":
+            return "Hermes is working on this task now. I’ll replace this with the result when the transcript is available.\n\n**Task:** \(taskText)"
+        case "needs_approval":
+            return "Hermes needs approval before it can finish this task. Check the Approvals tab or Tasks tab for the blocking decision.\n\n**Task:** \(taskText)"
+        case "blocked":
+            return "Hermes could not finish this task automatically. Open the Tasks tab for the blocker details.\n\n**Task:** \(taskText)"
+        case "completed":
+            if let summary = task?.summary, !summary.isEmpty { return "✅ \(summary)" }
+            if let detail = task?.detail, !detail.isEmpty { return "✅ \(detail)" }
+            if let note = history?.note, !note.isEmpty { return "Task completed. \(note)" }
+            return "Task completed, but Hermes did not attach a visible assistant response to this thread yet. Open the Tasks tab for the transcript/details."
+        default:
+            return "Hermes task status: **\(status)**. I’ll keep watching for the final response.\n\n**Task:** \(taskText)"
+        }
+    }
+
+    private func isTerminalTaskStatus(_ status: String) -> Bool {
+        ["completed", "blocked", "failed", "cancelled", "canceled", "error", "needs_approval"].contains(status)
     }
 
     func setWake(_ mode: String) async {
@@ -1933,6 +2072,7 @@ struct OperatorView: View {
                                 OperatorSound.navigate()
                                 service.messages = [ChatMessage(role: "system", content: "New Cartha Operator session. Ask quickly or queue durable work.")]
                                 service.queuedAskPrompts = []
+                                service.activeTaskThreadMessageIDs = [:]
                                 service.contextUsedTokens = 0
                                 pasteStatus = nil
                             }
