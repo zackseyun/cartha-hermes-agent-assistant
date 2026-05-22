@@ -86,6 +86,11 @@ The Swift app is the default human-facing shell. It opens as a small non-focus-s
 - `Hey Cartha` wake listener status and controls.
 - Native Apple upload approval decisions.
 
+Native/operator **Run Task** results stay inside the app thread and Tasks tab;
+they no longer summon the legacy centered Cartha Agent reply bubble. Alfred,
+URL, and voice tasks still use that bubble because they do not have a native
+task thread to update.
+
 Commands:
 
 ```bash

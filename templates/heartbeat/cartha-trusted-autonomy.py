@@ -387,15 +387,26 @@ Allowed actions:
 1) {"action":"shell","cwd":"/absolute/trusted/path","command":"...","timeout_seconds":120,"reason":"why this advances the task"}
 2) {"action":"respond","status":"completed|partial|blocked|needs_approval","summary":"short answer to Zack","details":"what you did / found","next_steps":["..."]}
 
-Pick exactly one action each turn. Prefer shell while useful work remains. Only respond completed after verification or a concrete blocker."""
+Pick exactly one action each turn. Prefer shell while useful work remains. Only respond completed after verification or a concrete blocker.
+For general diagnostics that do not need a specific repository, use the provided DEFAULT SAFE CWD. Never pick a cwd from stale context unless it is one of the trusted roots."""
 
 
-def build_user_prompt(task: str, source: str, context: str, observations: list[dict[str, Any]], roots: list[Path]) -> str:
+def build_user_prompt(
+    task: str,
+    source: str,
+    context: str,
+    observations: list[dict[str, Any]],
+    roots: list[Path],
+    default_cwd: Path,
+) -> str:
     obs = json.dumps(observations[-8:], indent=2)
     return f"""TASK FROM ZACK:
 {task}
 
 SOURCE: {source}
+
+DEFAULT SAFE CWD:
+{default_cwd}
 
 TRUSTED ROOTS:
 {chr(10).join("- " + str(r) for r in roots)}
@@ -520,8 +531,15 @@ def call_ollama(system: str, user: str, timeout: int = 180) -> str:
     raise RuntimeError("no local Ollama models configured")
 
 
-def call_planner(task: str, source: str, context: str, observations: list[dict[str, Any]], roots: list[Path]) -> dict[str, Any]:
-    user = build_user_prompt(task, source, context, observations, roots)
+def call_planner(
+    task: str,
+    source: str,
+    context: str,
+    observations: list[dict[str, Any]],
+    roots: list[Path],
+    default_cwd: Path,
+) -> dict[str, Any]:
+    user = build_user_prompt(task, source, context, observations, roots, default_cwd)
     raw = call_openrouter(SYSTEM_PROMPT, user)
     provider = "openrouter"
     if raw is None:
@@ -541,9 +559,25 @@ def default_policy_cfg(policy: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any], runtime_task_id: str = "") -> dict[str, Any]:
+def resolve_default_cwd(raw_cwd: str, roots: list[Path]) -> Path:
+    ok, cwd, _reason = validate_cwd(raw_cwd or str(SCRIPT_DIR), roots)
+    if ok:
+        return cwd
+    ok, cwd, _reason = validate_cwd(str(SCRIPT_DIR), roots)
+    return cwd if ok else SCRIPT_DIR.resolve()
+
+
+def run_autonomy(
+    task: str,
+    source: str,
+    context: str,
+    policy: dict[str, Any],
+    runtime_task_id: str = "",
+    default_cwd_raw: str = "",
+) -> dict[str, Any]:
     cfg = default_policy_cfg(policy)
     roots = allowed_roots_from_policy(policy)
+    default_cwd = resolve_default_cwd(default_cwd_raw, roots)
     run_id = f"auto-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
     artifact_path = RUNS_DIR / f"{run_id}.json"
     events_path, global_events_path = lifecycle_event_paths(run_id)
@@ -554,6 +588,7 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any], r
         "source": source,
         "run_id": run_id,
         "runtime_task_id": runtime_task_id,
+        "default_cwd": str(default_cwd),
     }]
     status = "blocked"
     summary = "Trusted Autonomy did not finish."
@@ -565,6 +600,7 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any], r
         "source": source,
         "task": task,
         "runtime_task_id": runtime_task_id,
+        "default_cwd": str(default_cwd),
         "artifact_path": str(artifact_path),
         "events_path": str(events_path),
         "global_events_path": str(global_events_path),
@@ -572,6 +608,7 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any], r
     emit_runtime_event(runtime_task_id, "turn.started", {
         "source": source,
         "task": task,
+        "default_cwd": str(default_cwd),
         "artifact_path": str(artifact_path),
         "autonomy_events_path": str(events_path),
     }, status="running", title="Trusted Autonomy started", run_id=run_id)
@@ -584,7 +621,7 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any], r
                 next_steps = ["Ask me to continue if you want me to keep going."]
                 break
             try:
-                action = call_planner(task, source, context, observations, roots)
+                action = call_planner(task, source, context, observations, roots, default_cwd)
             except Exception as exc:
                 status = "blocked"
                 summary = "Trusted Autonomy could not plan the next step."
@@ -633,7 +670,7 @@ def run_autonomy(task: str, source: str, context: str, policy: dict[str, Any], r
                 break
 
             command = str(action.get("command") or "")
-            cwd_raw = str(action.get("cwd") or str(SCRIPT_DIR))
+            cwd_raw = str(action.get("cwd") or str(default_cwd))
             timeout = int(action.get("timeout_seconds") or cfg["default_timeout_seconds"])
             guard = guard_command(command, cwd_raw, roots, timeout)
             if not guard.ok:
@@ -788,6 +825,7 @@ def main() -> int:
     parser.add_argument("--context", default="")
     parser.add_argument("--context-file", default="")
     parser.add_argument("--runtime-task-id", default="")
+    parser.add_argument("--cwd", default="")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -808,7 +846,7 @@ def main() -> int:
             context = f"(could not read context file: {exc})"
 
     policy = load_policy()
-    result = run_autonomy(task, args.source, context, policy, args.runtime_task_id)
+    result = run_autonomy(task, args.source, context, policy, args.runtime_task_id, args.cwd)
     print(json.dumps(result))
     return 0 if result.get("status") in {"completed", "partial", "blocked", "needs_approval"} else 1
 

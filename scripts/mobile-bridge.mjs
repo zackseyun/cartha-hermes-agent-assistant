@@ -13,6 +13,7 @@ const HOST = process.env.HERMES_MOBILE_HOST || "0.0.0.0";
 const PORT = Number.parseInt(process.env.HERMES_MOBILE_PORT || "5138", 10);
 const MAX_BODY_BYTES = Number.parseInt(process.env.HERMES_MOBILE_MAX_BODY_BYTES || "2000000", 10);
 const HERMES_TASK_SH = process.env.HERMES_TASK_SH || path.join(HOME, ".hermes", "scripts", "hermes-task.sh");
+const HERMES_TASK_CWD = process.env.HERMES_TASK_CWD || path.dirname(HERMES_TASK_SH);
 const HERMES_REPLIES_PATH = process.env.HERMES_REPLIES_PATH || path.join(HOME, ".hermes", "heartbeat-replies.jsonl");
 
 function readDotenvValue(raw, key) {
@@ -149,11 +150,13 @@ async function queueHermesTask(command, metadata = {}) {
   const result = await run(HERMES_TASK_SH, [command], {
     timeout: 10_000,
     maxBuffer: 512 * 1024,
+    cwd: HERMES_TASK_CWD,
     env: {
       ...process.env,
       CARTHA_TASK_SOURCE: "iphone-hermes-client",
       CARTHA_TASK_TITLE: title,
       CARTHA_TASK_MODE: clampText(metadata.mode || "iphone", 32).replace(/[^\w.-]/gu, "_") || "iphone",
+      CARTHA_TASK_CWD: HERMES_TASK_CWD,
       CARTHA_TASK_CONFIRM_PREFIX: "iPhone Hermes queued:",
     },
   });

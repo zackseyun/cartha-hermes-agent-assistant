@@ -84,6 +84,16 @@ OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
 KEEP_ALIVE = os.environ.get("HEARTBEAT_KEEP_ALIVE", "15m")
 PHASE_OVERRIDE = os.environ.get("HEARTBEAT_PHASE")  # "1", "2", or "3"
 
+# Operator UI submissions already have an inline task thread + Tasks tab. Keep
+# those unhooked from the legacy centered reply bubble unless explicitly opted in.
+INLINE_TASK_RESULT_SOURCES = {
+    "native-operator",
+    "operator",
+    "web-operator",
+    "iphone-hermes-client",
+}
+FORCE_OPERATOR_TASK_BUBBLES = (os.environ.get("CARTHA_OPERATOR_TASK_BUBBLE", "").lower() in {"1", "true", "yes", "on"})
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 ESCALATION_MODEL = os.environ.get("HEARTBEAT_ESCALATION_MODEL", "deepseek/deepseek-v4-flash")
 
@@ -518,6 +528,14 @@ def _reply_text(item: dict) -> str:
 
 def _reply_source(item: dict) -> str:
     return str(item.get("source") or "")
+
+
+def should_show_direct_task_bubble(item: dict) -> bool:
+    """Keep native/operator task results inside the operator UI, not a second modal."""
+    if FORCE_OPERATOR_TASK_BUBBLES:
+        return True
+    source = _reply_source(item)
+    return source not in INLINE_TASK_RESULT_SOURCES
 
 
 def _is_ios_testflight_prompt(item: dict) -> bool:
@@ -1318,6 +1336,7 @@ def run_trusted_autonomy_task(item: dict, context_bundle: str) -> dict:
     task_text = _reply_text(item).strip()
     source = _reply_source(item) or str(item.get("mode") or "unknown")
     runtime_task_id = str(item.get("runtime_task_id") or item.get("id") or "").strip()
+    task_cwd = str(item.get("cwd") or "").strip()
     if not TRUSTED_AUTONOMY_SH.exists():
         return {
             "status": "blocked",
@@ -1336,6 +1355,7 @@ def run_trusted_autonomy_task(item: dict, context_bundle: str) -> dict:
                 "--source", source,
                 "--context-file", str(context_path),
                 "--runtime-task-id", runtime_task_id,
+                "--cwd", task_cwd,
             ],
             capture_output=True,
             text=True,
@@ -1504,13 +1524,17 @@ def main() -> int:
             artifact_path = result.get("artifact_path")
             if artifact_path:
                 journal_append(f"  ↳ artifact={artifact_path}")
-            notify_macos(
-                "Cartha Agent",
-                message,
-                severity=severity,
-                force_reply=True,
-                replace_key=("cartha-agent-voice" if voice_task else ""),
-            )
+            if should_show_direct_task_bubble(item):
+                notify_macos(
+                    "Cartha Agent",
+                    message,
+                    severity=severity,
+                    force_reply=True,
+                    replace_key=("cartha-agent-voice" if voice_task else ""),
+                )
+            else:
+                journal_append("  ↳ shown_inline=operator_task_surface")
+                print("suppressed Cartha Agent bubble for inline operator task result")
             return 0
 
     t0 = time.time()

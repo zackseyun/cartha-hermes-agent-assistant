@@ -34,6 +34,7 @@ const HERMES_HEARTBEAT_JOURNAL_PATH =
   process.env.HERMES_HEARTBEAT_JOURNAL_PATH || path.join(HOME, ".hermes", "heartbeat-journal.md");
 const HERMES_POLICY_PATH = process.env.HERMES_POLICY_PATH || path.join(HOME, ".hermes", "heartbeat-config", "policy.json");
 const HERMES_TASK_SH = process.env.HERMES_TASK_SH || path.join(HOME, ".hermes", "scripts", "hermes-task.sh");
+const HERMES_TASK_CWD = process.env.HERMES_TASK_CWD || path.dirname(HERMES_TASK_SH);
 const HERMES_RUNTIME_DIR = process.env.HERMES_RUNTIME_DIR || path.join(HOME, ".hermes", "runtime");
 const HERMES_RUNTIME_TASK_STORE_MODULE =
   process.env.HERMES_RUNTIME_TASK_STORE_MODULE || "./lib/runtime-task-store.mjs";
@@ -1957,11 +1958,13 @@ async function handleOperatorTaskSubmit(req, res) {
     const result = await run(HERMES_TASK_SH, [task], {
       timeout: 10_000,
       maxBuffer: 512 * 1024,
+      cwd: HERMES_TASK_CWD,
       env: {
         ...process.env,
         CARTHA_TASK_SOURCE: "native-operator",
         CARTHA_TASK_TITLE: title,
         CARTHA_TASK_MODE: mode,
+        CARTHA_TASK_CWD: HERMES_TASK_CWD,
         CARTHA_TASK_CONFIRM_PREFIX: "Cartha Operator queued:",
       },
     });

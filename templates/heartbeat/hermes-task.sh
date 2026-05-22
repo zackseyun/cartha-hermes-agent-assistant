@@ -14,9 +14,6 @@
 
 set -u
 
-# Invocation breadcrumb — proves the script was reached (Alfred firing, terminal, etc.)
-echo "$(date -Iseconds) src=${CARTHA_TASK_SOURCE:-${HERMES_TASK_SOURCE:-cli}} argv=$* pwd=$(pwd)" >> /tmp/hermes-task-invocations.log
-
 TASK="${1:-}"
 # Allow piped input as fallback
 if [[ -z "$TASK" && ! -t 0 ]]; then
@@ -39,6 +36,10 @@ TASK_MODE="${CARTHA_TASK_MODE:-task}"
 CONFIRM_PREFIX="${CARTHA_TASK_CONFIRM_PREFIX:-Cartha Agent queued:}"
 ID="${ID_PREFIX}-$(date +%s)-$(printf '%04x' "$RANDOM")"
 TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+TASK_CWD="${CARTHA_TASK_CWD:-$(pwd)}"
+
+# Invocation breadcrumb — proves the script was reached (Alfred firing, terminal, etc.)
+echo "$(date -Iseconds) src=${CARTHA_TASK_SOURCE:-${HERMES_TASK_SOURCE:-cli}} argv=$* pwd=$(pwd) task_cwd=$TASK_CWD" >> /tmp/hermes-task-invocations.log
 
 # Create a durable runtime task first. This is best-effort so Alfred/voice
 # still work if the new ledger is temporarily unavailable.
@@ -49,11 +50,11 @@ if [[ -x "$RUNTIME_EVENT_PY" ]]; then
     --source "${HERMES_TASK_SOURCE:-${CARTHA_TASK_SOURCE:-alfred}}" \
     --mode "$TASK_MODE" \
     --text "$TASK" \
-    --cwd "$(pwd)" >/dev/null 2>>/tmp/hermes-runtime-event.err || true
+    --cwd "$TASK_CWD" >/dev/null 2>>/tmp/hermes-runtime-event.err || true
 fi
 
 # Append a JSON line. Use Python so we don't have to hand-escape the task text.
-TS="$TS" ID="$ID" TASK_TITLE="$TASK_TITLE" TASK_MODE="$TASK_MODE" python3 - "$TASK" >> "$REPLIES_FILE" <<'PY'
+TS="$TS" ID="$ID" TASK_TITLE="$TASK_TITLE" TASK_MODE="$TASK_MODE" TASK_CWD="$TASK_CWD" python3 - "$TASK" >> "$REPLIES_FILE" <<'PY'
 import json, os, sys
 print(json.dumps({
   "ts": os.environ["TS"],
@@ -64,6 +65,7 @@ print(json.dumps({
   "reply": sys.argv[1],
   "source": os.environ.get("HERMES_TASK_SOURCE") or os.environ.get("CARTHA_TASK_SOURCE", "alfred"),
   "mode": os.environ.get("TASK_MODE", "task"),
+  "cwd": os.environ.get("TASK_CWD", ""),
 }))
 PY
 
