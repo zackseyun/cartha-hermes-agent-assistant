@@ -43,8 +43,8 @@ const xcconfig = join(tempDir, 'LocalDefaults.xcconfig');
 try {
   const token = readToken();
   writeFileSync(xcconfig, [
-    `INFOPLIST_KEY_HERMESDefaultBridgeURL = ${bridgeURL}`,
-    `INFOPLIST_KEY_HERMESDefaultBridgeToken = ${token}`,
+    `HERMES_DEFAULT_BRIDGE_URL = ${bridgeURL}`,
+    `HERMES_DEFAULT_BRIDGE_TOKEN = ${token}`,
     '',
   ].join('\n'));
 

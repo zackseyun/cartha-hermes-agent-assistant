@@ -45,7 +45,7 @@ final class HermesBridgeClient: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         do {
-            var request = try makeRequest(baseURL: baseURL, path: "/health", token: token)
+            var request = try makeRequest(baseURL: baseURL, path: "/health", token: token, requiresAuth: false)
             request.httpMethod = "GET"
             let (data, response) = try await URLSession.shared.data(for: request)
             try validate(response: response, data: data)
@@ -107,10 +107,16 @@ final class HermesBridgeClient: ObservableObject {
         }
     }
 
-    private func makeRequest(baseURL: String, path: String, token: String) throws -> URLRequest {
+    private func makeRequest(baseURL: String, path: String, token: String, requiresAuth: Bool = true) throws -> URLRequest {
         guard let url = URL(string: normalized(baseURL) + path) else { throw BridgeError.badURL }
         var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if requiresAuth {
+            guard !trimmedToken.isEmpty else { throw BridgeError.missingToken }
+        }
+        if !trimmedToken.isEmpty {
+            request.setValue("Bearer \(trimmedToken)", forHTTPHeaderField: "Authorization")
+        }
         request.timeoutInterval = 30
         return request
     }
@@ -131,13 +137,15 @@ final class HermesBridgeClient: ObservableObject {
 enum BridgeError: LocalizedError {
     case badURL
     case badImage
+    case missingToken
     case http(Int, String)
 
     var errorDescription: String? {
         switch self {
         case .badURL: "Bad bridge URL"
         case .badImage: "Screen response was not an image"
-        case .http(let code, let body): "HTTP \(code): \(body.prefix(220))"
+        case .missingToken: "Missing mobile token — reinstall with npm run mobile:deploy-ios or open settings."
+        case .http(let code, let body): code == 401 ? "Unauthorized — mobile token is out of sync. Reinstall with npm run mobile:deploy-ios." : "HTTP \(code): \(body.prefix(220))"
         }
     }
 }

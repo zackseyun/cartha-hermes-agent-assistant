@@ -146,8 +146,7 @@ struct ContentView: View {
                 Task { await client.health(baseURL: bridgeBaseURL, token: bridgeToken) }
             }
             QuickActionButton(title: "Paste Mac", icon: "doc.on.clipboard.fill") {
-                command = "Paste this at my Mac cursor"
-                mode = .paste
+                Task { await pasteToMacNow() }
             }
             QuickActionButton(title: "Screen", icon: "display") {
                 Task { await client.refreshScreen(baseURL: bridgeBaseURL, token: bridgeToken) }
@@ -283,16 +282,26 @@ struct ContentView: View {
         }
     }
 
+    private func pasteToMacNow() async {
+        let text = trimmedCommand
+        guard !text.isEmpty else {
+            client.statusMessage = "Type or speak something first, then tap Paste Mac."
+            return
+        }
+        await client.dispatch(baseURL: bridgeBaseURL, token: bridgeToken, command: text, mode: .paste)
+        if client.isConnected { command = "" }
+    }
+
     private func applyBundledDefaultsIfNeeded() {
         let info = Bundle.main.infoDictionary ?? [:]
-        if bridgeBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let bundledURL = info["HERMESDefaultBridgeURL"] as? String,
-           !bundledURL.isEmpty {
+        if let bundledURL = info["HERMESDefaultBridgeURL"] as? String,
+           !bundledURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !bundledURL.contains("$(") {
             bridgeBaseURL = bundledURL
         }
-        if bridgeToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           let bundledToken = info["HERMESDefaultBridgeToken"] as? String,
-           !bundledToken.isEmpty {
+        if let bundledToken = info["HERMESDefaultBridgeToken"] as? String,
+           !bundledToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !bundledToken.contains("$(") {
             bridgeToken = bundledToken
         }
     }
