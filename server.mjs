@@ -1662,10 +1662,10 @@ async function readToolCapabilities(statusPayload = null, wakePayload = null) {
     {
       id: "wake",
       label: "Voice wake",
-      status: wake?.active ? "listening" : "muted",
-      ready: wake?.active === true,
-      icon: "waveform",
-      detail: wake?.active ? `“${wake.wakePrompt || CARTHA_WAKE_PROMPT}” listener is active` : "Manual and Alfred tasks still work",
+      status: "disabled",
+      ready: false,
+      icon: "waveform.slash",
+      detail: "Wake word is sunset for now; manual Ask, Run Task, Alfred, and Research stay available",
     },
     {
       id: "durable_tasks",
@@ -2055,29 +2055,19 @@ async function handleHermesSessions(_req, res) {
 }
 
 async function buildWakePayload() {
-  const listenerRunning = await commandOk("pgrep", ["-f", CARTHA_VOICE_LISTENER]);
-  const launchd = await run("launchctl", ["print", `gui/${process.getuid?.() || ""}/dev.cartha.voice`], { timeout: 2_500, maxBuffer: 256 * 1024 })
-    .then((result) => result.stdout || "")
-    .catch(() => "");
-  const launchdRunning = /state = running/u.test(launchd);
-  const whisperRunning = await commandOk("pgrep", ["-f", `whisper-server .*--port ${CARTHA_WHISPER_PORT}`]);
-  const toggleText = await run(CARTHA_VOICE_TOGGLE_SH, ["status"], { timeout: 5_000, maxBuffer: 256 * 1024 })
-    .then((result) => (result.stdout || "").trim())
-    .catch((err) => String(err?.stderr || err?.stdout || err?.message || err).trim());
-
   return {
     ok: true,
-    active: listenerRunning || launchdRunning,
-    listenerRunning,
-    launchdRunning,
-    whisperRunning,
+    active: false,
+    listenerRunning: false,
+    launchdRunning: false,
+    whisperRunning: false,
     wakePrompt: CARTHA_WAKE_PROMPT,
-    toggleText,
+    toggleText: "Wake word is disabled for now. Manual Ask, Run Task, Alfred, and Research remain available.",
     guardrails: [
-      "Only the phrase “Hey Cartha” wakes the agent; bare “Cartha” is not a wake phrase.",
-      "Wake/reply triggers are suppressed while the Fn/globe key is held, so local dictation gets priority.",
-      "Alfred/URL/manual task submission stays available even when wake listening is muted.",
-      "Destructive local autonomy still goes through the Hermes trusted-autonomy policy gates.",
+      "Wake-word listening has been intentionally sunset for now.",
+      "Manual Ask and Run Task are the supported interaction paths.",
+      "Local SearXNG research remains available through Ask auto-routing and the Research tab.",
+      "Alfred/manual task submission stays available without the microphone listener.",
     ],
   };
 }

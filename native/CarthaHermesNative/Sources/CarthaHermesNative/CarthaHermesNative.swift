@@ -509,6 +509,8 @@ enum NativeTab: String, CaseIterable, Hashable {
     case wake
     case workspace
 
+    static var visibleTabs: [NativeTab] { allCases.filter { $0 != .wake } }
+
     var title: String {
         switch self {
         case .now: return "Now"
@@ -517,7 +519,7 @@ enum NativeTab: String, CaseIterable, Hashable {
         case .tasks: return "Tasks"
         case .approvals: return "Approvals"
         case .sessions: return "Sessions"
-        case .wake: return "Voice"
+        case .wake: return "Voice (Sunset)"
         case .workspace: return "Workspace"
         }
     }
@@ -530,7 +532,7 @@ enum NativeTab: String, CaseIterable, Hashable {
         case .tasks: return "Queued, running, blocked, and completed work"
         case .approvals: return "Apple upload gates"
         case .sessions: return "Recent Hermes conversations"
-        case .wake: return "Hey Cartha listener and guardrails"
+        case .wake: return "Wake word is disabled"
         case .workspace: return "Embedded fallback bridge"
         }
     }
@@ -606,9 +608,7 @@ final class HermesService: ObservableObject {
     }
 
     var wakeSummary: String {
-        guard let wake else { return "Wake status unknown" }
-        let prompt = wake.wakePrompt ?? "hey cartha"
-        return wake.active == true ? "Listening for “\(prompt)”" : "Wake muted · manual tasks still work"
+        "Wake word disabled · manual Ask and Run Task stay available"
     }
 
     var isStackReady: Bool {
@@ -1646,11 +1646,9 @@ struct BubbleView: View {
             HStack(spacing: 9) {
                 Button("Open cockpit") { OperatorSound.navigate(); openPanel() }
                     .buttonStyle(.borderedProminent)
-                Button(service.wake?.active == true ? "Mute wake" : "Wake on") {
-                    OperatorSound.navigate()
-                    Task { await service.setWake(service.wake?.active == true ? "off" : "on") }
-                }
-                .buttonStyle(.bordered)
+                Button("Wake disabled") { OperatorSound.navigate() }
+                    .buttonStyle(.bordered)
+                    .disabled(true)
                 Button(action: { OperatorSound.navigate(); refresh() }) { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless)
             }
@@ -1707,7 +1705,7 @@ struct SidebarView: View {
             .padding(.bottom, 4)
 
             VStack(spacing: 7) {
-                ForEach(NativeTab.allCases, id: \.self) { tab in
+                ForEach(NativeTab.visibleTabs, id: \.self) { tab in
                     SidebarNavItem(
                         tab: tab,
                         selected: service.selectedTab == tab,
@@ -1917,7 +1915,7 @@ struct NowView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 8) {
                             StatusPill(text: service.isStackReady ? "local stack ready" : "needs attention", color: .white)
-                            StatusPill(text: service.wake?.active == true ? "voice on" : "voice muted", color: .white)
+                            StatusPill(text: "wake disabled", color: .white)
                         }
                         Text("Your local Cartha agent is ready to supervise work.")
                             .font(OperatorTheme.display(29))
@@ -1943,7 +1941,7 @@ struct NowView: View {
 
                 LazyVGrid(columns: columns, spacing: 14) {
                     MetricTile(title: "Gateway", value: service.status?.hermesGateway ?? "unknown", detail: service.status?.localAgentModel ?? "Hermes agent", icon: "network", color: service.status?.hermesGateway == "online" ? .green : .orange)
-                    MetricTile(title: "Wake", value: service.wake?.active == true ? "Listening" : "Muted", detail: service.wakeSummary, icon: "waveform", color: service.wake?.active == true ? .green : .secondary)
+                    MetricTile(title: "Wake", value: "Disabled", detail: service.wakeSummary, icon: "waveform.slash", color: .secondary)
                     MetricTile(title: "Active work", value: "\(service.runningTasks.count)", detail: "Queued, running, or awaiting approval", icon: "checklist", color: service.runningTasks.isEmpty ? .secondary : .orange)
                     MetricTile(title: "Approvals", value: "\(service.pendingProposals.count)", detail: "Apple upload decisions pending", icon: "checkmark.seal", color: service.pendingProposals.isEmpty ? .green : OperatorTheme.carthaRed)
                 }
@@ -3367,40 +3365,34 @@ struct WakeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                GlassCard(padding: 22) {
+                GlassCard(padding: 24) {
                     HStack(spacing: 18) {
-                        Image(systemName: service.wake?.active == true ? "waveform.circle.fill" : "waveform.circle")
-                            .font(.system(size: 46, weight: .semibold))
-                            .foregroundStyle(service.wake?.active == true ? .green : .secondary)
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text(service.wakeSummary)
+                        Image(systemName: "waveform.slash")
+                            .font(.system(size: 48, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Wake word is disabled")
                                 .font(OperatorTheme.display(24))
-                            Text(service.wake?.toggleText ?? "Wake status is loading.")
+                            Text("We are sunsetting the Hey Cartha listener for now. Manual Ask, Run Task, Alfred task entry, and Research stay available.")
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        VStack(spacing: 9) {
-                            Button("Turn on") { OperatorSound.navigate(); Task { await service.setWake("on") } }
-                                .buttonStyle(.borderedProminent)
-                            Button("Mute") { OperatorSound.navigate(); Task { await service.setWake("off") } }
-                                .buttonStyle(.bordered)
-                        }
                     }
                 }
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 14)], spacing: 14) {
-                    MetricTile(title: "Listener", value: service.wake?.listenerRunning == true ? "Running" : "Stopped", detail: "Voice listener process", icon: "ear", color: service.wake?.listenerRunning == true ? .green : .orange)
-                    MetricTile(title: "Launchd", value: service.wake?.launchdRunning == true ? "Running" : "Stopped", detail: "dev.cartha.voice", icon: "gearshape.2", color: service.wake?.launchdRunning == true ? .green : .orange)
-                    MetricTile(title: "Whisper", value: service.wake?.whisperRunning == true ? "Online" : "Offline", detail: "Local transcription server", icon: "mic", color: service.wake?.whisperRunning == true ? .green : .orange)
+                    MetricTile(title: "Listener", value: "Disabled", detail: "Wake process intentionally stopped", icon: "ear.badge.xmark", color: .secondary)
+                    MetricTile(title: "Launchd", value: "Disabled", detail: "dev.cartha.voice is not loaded", icon: "gearshape.2", color: .secondary)
+                    MetricTile(title: "Whisper", value: "Off", detail: "No wake transcription server", icon: "mic.slash", color: .secondary)
                 }
 
                 GlassCard {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Guardrails")
+                        Text("What still works")
                             .font(.headline)
-                        ForEach(service.wake?.guardrails ?? [], id: \.self) { item in
-                            Label(item, systemImage: "checkmark.shield")
+                        ForEach(["Ask uses the fast local MLX model.", "Run Task queues durable Hermes work.", "Research can still use local SearXNG.", "Alfred/manual task shortcuts are not wake-word dependent."], id: \.self) { item in
+                            Label(item, systemImage: "checkmark.circle")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(.secondary)
                         }
@@ -3524,7 +3516,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             service.selectedTab = .research
             showMainWindow()
         case "wake", "voice":
-            service.selectedTab = .wake
+            service.selectedTab = .now
             showMainWindow()
         case "tasks", "task":
             service.selectedTab = .tasks
