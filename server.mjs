@@ -581,6 +581,7 @@ function sourceHost(source) {
 }
 
 function buildResearchPrompt(run) {
+  const currentDate = new Date().toISOString().slice(0, 10);
   const sources = run.sources
     .map((source, index) => {
       const label = source.id || `S${index + 1}`;
@@ -599,11 +600,11 @@ function buildResearchPrompt(run) {
     {
       role: "system",
       content:
-        "You are Cartha Research Room, a careful web research analyst. Use only the supplied source pack. Be concise but substantive. Cite factual claims with bracketed source IDs like [S1]. If sources disagree or are weak, say so plainly. Do not invent citations.",
+        `You are Cartha Research Room, a careful web research analyst. Current date: ${currentDate}. Use only the supplied source pack. Be concise but substantive. Cite factual claims with bracketed source IDs like [S1]. If sources disagree or are weak, say so plainly. Do not invent citations. Treat source dates on or before the current date as normal historical/current records, not as future projections.`,
     },
     {
       role: "user",
-      content: `Research question: ${run.query}\n\nMode: ${run.mode}\n\nSource pack:\n${sources}\n\nWrite a markdown answer with:\n1. a direct answer first,\n2. 3-6 key findings with citations,\n3. source notes / caveats,\n4. suggested follow-up searches if useful.`,
+      content: `Current date: ${currentDate}\n\nResearch question: ${run.query}\n\nMode: ${run.mode}\n\nSource pack:\n${sources}\n\nWrite a markdown answer with:\n1. a direct answer first,\n2. 3-6 key findings with citations,\n3. source notes / caveats,\n4. suggested follow-up searches if useful.`,
     },
   ];
 }
@@ -613,10 +614,16 @@ async function callResearchModel(run) {
   const localModel = HERMES_RESEARCH_MODEL || (await getHermesLocalModel());
   const candidates = [
     {
-      label: "local",
-      url: `${OLLAMA_API_BASE}/chat/completions`,
+      label: "local-mlx",
+      url: `${MLX_API_BASE}/chat/completions`,
       headers: { "Content-Type": "application/json" },
-      body: { model: localModel, messages, temperature: 0.2, max_tokens: 2200 },
+      body: {
+        model: localModel,
+        messages,
+        temperature: 0.15,
+        max_tokens: 2200,
+        chat_template_kwargs: { enable_thinking: false },
+      },
     },
   ];
 
@@ -2285,6 +2292,64 @@ async function handleStatus(_req, res) {
   sendJson(res, payload.ok ? 200 : 502, payload);
 }
 
+function shouldUseResearchTool(messages, body = {}) {
+  if (body.research === true || body.useResearch === true || body.web === true) return true;
+  if (body.research === false || body.useResearch === false || body.web === false) return false;
+  if (body.autoResearch === false) return false;
+
+  const text = latestUserText(messages);
+  if (!text) return false;
+  const normalized = text.toLowerCase();
+  if (/\b(?:no web|don'?t search|do not search|without (?:web|internet|search)|offline only|from your training)\b/iu.test(normalized)) return false;
+
+  const explicitResearch = /\b(?:search|web search|internet|look\s*up|google|research|find sources?|cite|citation|source-backed|with sources|external info|public web)\b/iu.test(normalized);
+  const currentInfo = /\b(?:latest|current|currently|today|tonight|this week|this month|recent|newest|news|breaking|release(?:d)?|version|changelog|price|pricing|stock|weather|forecast|schedule|score|results?|status page|available now|who is the (?:current|new)|ceo of|president of)\b/iu.test(normalized);
+  const urlMention = /https?:\/\/|\b[a-z0-9-]+\.(?:com|org|net|ai|dev|io|gov|edu)\b/iu.test(text);
+  return explicitResearch || currentInfo || urlMention;
+}
+
+function researchSourcesMarkdown(run) {
+  const sources = (run.sources || []).slice(0, 8);
+  if (!sources.length) return "";
+  return sources
+    .map((source) => `- [${source.id}] ${source.title || sourceHost(source) || source.url}${source.url ? ` — ${source.url}` : ""}`)
+    .join("\n");
+}
+
+function researchRunChatAnswer(run) {
+  const sourceList = researchSourcesMarkdown(run);
+  const header = `🔎 Used local SearXNG research (${run.mode || "quick"})`;
+  const caveat = run.status === "failed"
+    ? "\n\n⚠️ Research failed before a reliable source pack could be built."
+    : run.status === "completed_with_fallback"
+      ? "\n\n_Note: model synthesis fell back to an extractive source brief._"
+      : "";
+  return `${run.answer || "No research answer was produced."}${caveat}\n\n---\n**${header}**${run.durationMs ? ` · ${(run.durationMs / 1000).toFixed(1)}s` : ""}${sourceList ? `\n\n**Sources**\n${sourceList}` : ""}`.trim();
+}
+
+function sendChatCompletionSSE(res, content, extra = {}) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  const id = `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 10)}`;
+  const created = Math.floor(Date.now() / 1000);
+  const model = extra.model || "cartha-research-room";
+  const chunks = String(content || "").match(/[\s\S]{1,1200}/gu) || [""];
+  res.write(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", model, created, choices: [{ index: 0, finish_reason: null, delta: { role: "assistant" } }] })}\n\n`);
+  for (const chunk of chunks) {
+    res.write(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", model, created, choices: [{ index: 0, finish_reason: null, delta: { content: chunk } }] })}\n\n`);
+  }
+  if (extra.usage) {
+    res.write(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", model, created, choices: [{ index: 0, finish_reason: null, delta: {} }], usage: extra.usage })}\n\n`);
+  }
+  res.write(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", model, created, choices: [{ index: 0, finish_reason: "stop", delta: {} }] })}\n\n`);
+  res.write("data: [DONE]\n\n");
+  res.end();
+}
+
 async function proxyStreamingRequest(req, res, upstreamUrl, headers, body) {
   const controller = new AbortController();
   // Abort only if the browser actually disconnects mid-stream. `req.close`
@@ -2382,6 +2447,32 @@ async function proxyChat(req, res) {
 
   if (requestedBackend === "mlx") {
     const localModel = await getHermesLocalModel();
+    if (shouldUseResearchTool(messages, body)) {
+      const query = latestUserText(messages);
+      try {
+        const run = await buildResearchRun({
+          query,
+          title: query,
+          mode: body.researchMode || body.mode || "quick",
+          maxResults: body.maxResults,
+          maxFetches: body.maxFetches,
+        });
+        return sendChatCompletionSSE(res, researchRunChatAnswer(run), {
+          model: run.model || localModel,
+          usage: {
+            prompt_tokens: Math.ceil(query.length / 4),
+            completion_tokens: Math.ceil(String(run.answer || "").length / 4),
+            total_tokens: Math.ceil((query.length + String(run.answer || "").length) / 4),
+          },
+        });
+      } catch (err) {
+        return sendChatCompletionSSE(
+          res,
+          `⚠️ I tried to use local SearXNG research, but it failed: ${String(err?.message || err)}\n\nYou can still try the Research tab after checking that SearXNG is running at ${HERMES_RESEARCH_SEARXNG_URL}.`,
+          { model: "cartha-research-room" },
+        );
+      }
+    }
     const localSystem = {
       role: "system",
       content: [
@@ -2389,6 +2480,7 @@ async function proxyChat(req, res) {
         "Answer with final user-facing content only; never reveal hidden reasoning, thinking traces, scratchpads, or chain-of-thought.",
         "Be concise, useful, and format with clean Markdown bullets when helpful.",
         "If the user asks for visual output, you may use Markdown tables, ASCII diagrams, Mermaid fenced blocks, or Markdown image links to local/remote files.",
+        "You have a local SearXNG research tool through Cartha Research Room. When a request needs current facts, web sources, URLs, versions, prices, news, weather, or citations, the server should route through that tool and you should ground the answer in returned sources instead of guessing.",
       ].join(" "),
     };
     const localMessages = visualMessages[0]?.role === "system"
