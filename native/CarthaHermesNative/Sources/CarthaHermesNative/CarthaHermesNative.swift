@@ -960,7 +960,6 @@ final class HermesService: ObservableObject {
     func submitTask(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isSubmittingTask else { return }
-        OperatorSound.send()
         isSubmittingTask = true
         defer { isSubmittingTask = false }
 
@@ -983,7 +982,6 @@ final class HermesService: ObservableObject {
                 status: response.status ?? response.task?.status ?? "queued",
                 detail: taskID.isEmpty ? "Queued, but no task id was returned yet." : "Task id: \(taskID)"
             )
-            OperatorSound.success()
             lastError = nil
             await refreshOverview()
             if !taskID.isEmpty {
@@ -997,7 +995,6 @@ final class HermesService: ObservableObject {
                 status: "failed",
                 detail: error.localizedDescription
             )
-            OperatorSound.warning()
             lastError = "Task: \(error.localizedDescription)"
         }
     }
@@ -1040,7 +1037,6 @@ final class HermesService: ObservableObject {
                         detail: task?.detail ?? history?.session?.path ?? "Transcript linked."
                     )
                     if isTerminalTaskStatus(status) {
-                        OperatorSound.receive()
                         return
                     }
                 } else {
@@ -1053,7 +1049,6 @@ final class HermesService: ObservableObject {
                 }
 
                 if isTerminalTaskStatus(status) {
-                    OperatorSound.receive()
                     return
                 }
             } catch {
