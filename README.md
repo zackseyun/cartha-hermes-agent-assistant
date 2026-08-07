@@ -69,20 +69,26 @@ npm run agents -- prompt \
 # Run a specialist in an isolated Hermes git worktree (default)
 npm run agents -- run \
   --agent mobile-engineer \
-  --projects mobile,web \
-  --task "Implement the approved reader change and run focused checks"
+  --projects mobile \
+  --task "Implement the approved mobile reader change and run focused checks"
 
 # Print a repository's native validation plan; add --execute to run it
 npm run agents -- validate --project pob
 ```
 
 Repositories are expected as siblings of this checkout. Set
-`CARTHA_PROJECTS_ROOT=/path/to/parent` when they live elsewhere. Agent runs are
-worktree-first; the first listed project is writable and additional projects are
-read-only dependency context, so cross-repository edits use separate scoped runs.
+`CARTHA_PROJECTS_ROOT=/path/to/parent` when they live elsewhere. Executable
+agent runs accept exactly one project and are worktree-first; multi-project
+prompts are planning artifacts only. Cross-repository edits use separate scoped
+runs so each repository gets its own branch, validation, and commit.
 The runner never authorizes deploys, production pushes, cloud mutations,
 package publishing, or app-store submission by itself. Those actions still
 require an explicit task-level approval.
+
+Worktree isolation protects Git state, but it is not an OS filesystem sandbox.
+Hermes tools still run with the operator's account permissions. Use a container
+or another OS-level sandbox when processing untrusted repositories; prompt rules
+must not be treated as a hard host-filesystem security boundary.
 
 ### CI/CD design rule
 

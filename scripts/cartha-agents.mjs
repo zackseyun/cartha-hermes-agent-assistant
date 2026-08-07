@@ -20,7 +20,7 @@ Usage:
   node scripts/cartha-agents.mjs check
   node scripts/cartha-agents.mjs status [--json]
   node scripts/cartha-agents.mjs prompt --agent ID --projects ID[,ID] --task TEXT
-  node scripts/cartha-agents.mjs run --agent ID --projects ID[,ID] --task TEXT [--no-worktree] [--dry-run]
+  node scripts/cartha-agents.mjs run --agent ID --projects ID --task TEXT [--no-worktree] [--dry-run]
   node scripts/cartha-agents.mjs validate --project ID [--execute]
 
 Environment:
@@ -117,6 +117,9 @@ function buildPrompt(registry, flags) {
 
 function runAgent(registry, flags) {
   const { projectIds, prompt } = buildPrompt(registry, flags);
+  if (projectIds.length !== 1) {
+    throw new Error("executable runs accept exactly one project; use prompt for cross-project planning and separate run commands for repository-scoped edits");
+  }
   const primary = resolveProject(registry, projectIds[0]);
   if (!projectStatus(registry, projectIds[0]).git) throw new Error(`primary project is not a local git checkout: ${primary.path}`);
   if (flags["no-worktree"] && gitValue(primary.path, ["status", "--porcelain"])) {
