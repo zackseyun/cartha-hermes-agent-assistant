@@ -1,0 +1,173 @@
+{
+  "version": 1,
+  "defaults": {
+    "projectsRootEnv": "CARTHA_PROJECTS_ROOT",
+    "branchPrefix": "agent/",
+    "deployPolicy": "never-without-explicit-approval",
+    "mutationPolicy": "worktree-first"
+  },
+  "projects": {
+    "assistant": {
+      "name": "Cartha Hermes Agent Assistant",
+      "repository": "zackseyun/cartha-hermes-agent-assistant",
+      "directory": "cartha-hermes-agent-assistant",
+      "contextFiles": ["README.md", "docs/ARCHITECTURE.md", "docs/OPERATIONS.md"],
+      "validation": ["npm run check"],
+      "ci": "GitHub Actions: Node 22 npm run check",
+      "boundaries": [
+        "Keep this repository as operational glue around upstream Hermes rather than a Hermes fork.",
+        "Never copy provider credentials into prompts, logs, config manifests, or commits."
+      ]
+    },
+    "pob": {
+      "name": "People's Open Bible",
+      "repository": "zackseyun/peoples-open-bible",
+      "directory": "peoples-open-bible",
+      "contextFiles": ["README.md", "METHODOLOGY.md", "DOCTRINE.md", "REFERENCE_SOURCES.md", "docs/CODEBUILD_OPERATIONS.md"],
+      "validation": [
+        "python3 -m pytest -q tests",
+        "python3 tools/extra_texts/validate_catalog.py --all",
+        "python3 tools/lint_psalm_numbering.py --strict",
+        "python3 tools/validate_reader_corpus.py --skip-yaml-syntax --quiet --malformed-yaml warn"
+      ],
+      "ci": "AWS CodeBuild operational jobs; GitHub Actions intentionally disabled",
+      "boundaries": [
+        "Preserve commit-level provenance and per-verse rationale.",
+        "Keep GitHub Actions disabled unless an explicit rollback is requested.",
+        "Do not trigger AWS CodeBuild, EKS jobs, publishing, or summary generation without explicit approval.",
+        "Treat doctrinal, textual-critical, copyright, and source-license decisions as review-gated."
+      ]
+    },
+    "mobile": {
+      "name": "Cartha Mobile",
+      "repository": "zackseyun/cartha.ai.mobile",
+      "directory": "cartha.ai.mobile",
+      "contextFiles": ["CLAUDE.md", "cartha_ai_mobile/UI_MAP.md", "cartha_ai_mobile/DEPLOYMENT.md", ".github/workflows/README.md"],
+      "validation": [
+        "cd cartha_ai_mobile && flutter analyze",
+        "cd cartha_ai_mobile && flutter test"
+      ],
+      "ci": "Hybrid GitHub Actions, AWS CodeBuild, and self-hosted macOS release runners",
+      "boundaries": [
+        "Maintain Flutter and hosted Next.js Bible Reader parity unless an exception is documented.",
+        "Do not run the full QA sweep unless explicitly requested; prefer focused analyze/tests/builds.",
+        "Keep production catalogs and editorial manifests behind APIs/CDN rather than in the mobile repository.",
+        "Never dispatch store uploads or production promotions without explicit approval."
+      ]
+    },
+    "web": {
+      "name": "Cartha Website",
+      "repository": "zackseyun/cartha.website",
+      "directory": "cartha.website",
+      "contextFiles": ["CLAUDE.md", "README.md", "ENV_SETUP.md"],
+      "validation": [
+        "npm run validate:pob-provenance",
+        "npm run validate:pob-search",
+        "npm run validate:bible-footnotes",
+        "npm run build"
+      ],
+      "ci": "Pushes to main feed AWS CodePipeline/CodeBuild; GitHub Action is an ad-hoc repair promotion",
+      "boundaries": [
+        "Maintain hosted Next.js and Flutter Bible Reader parity unless an exception is documented.",
+        "A main-branch push deploys to production; agents must not merge or push main without explicit approval.",
+        "Never invoke the production promotion workflow or AWS CodeBuild project without explicit approval."
+      ]
+    },
+    "platform": {
+      "name": "Cartha CDK and Services",
+      "repository": "zackseyun/CarthaCdkService",
+      "directory": "CarthaCdkService",
+      "contextFiles": ["CLAUDE.md", "README.md", "tests/README.md", "k8s/README.md"],
+      "validation": [
+        "npm run clean && npm run build",
+        "npm test -- --runInBand"
+      ],
+      "ci": "AWS CodePipeline/CodeBuild for services plus targeted GitHub workflows",
+      "boundaries": [
+        "Use the required cdk-safe-deploy wrapper for website hosting and pipeline stacks.",
+        "Never run cdk deploy, kubectl mutation, AWS mutation, or production rollout without explicit approval.",
+        "Call out changes that require a separate CDK deployment; service CI does not deploy CDK stacks.",
+        "Preserve backward compatibility by adding endpoints when an existing contract would break."
+      ]
+    }
+  },
+  "agents": {
+    "orchestrator": {
+      "name": "Cartha Orchestrator",
+      "tier": "reasoning",
+      "projects": ["assistant", "pob", "mobile", "web", "platform"],
+      "mission": "Decompose cross-repository work, identify dependency order and handoffs, and keep changes within the correct repository and deployment boundary.",
+      "rules": [
+        "Inspect every affected repository before proposing a cross-repository change.",
+        "Prefer independent, reviewable increments and state the required landing order.",
+        "Delegate implementation to the appropriate specialist when the task spans domains."
+      ]
+    },
+    "bible-steward": {
+      "name": "Bible Text and Provenance Steward",
+      "tier": "reasoning",
+      "projects": ["pob", "mobile", "web"],
+      "mission": "Protect textual provenance, source licensing, translation rationale, doctrinal transparency, and cross-platform reader integrity.",
+      "rules": [
+        "Never silently normalize a translation choice or erase alternatives and rationale.",
+        "Separate textual evidence, editorial judgment, and product presentation in findings.",
+        "Require explicit review for doctrinal, source-license, or canonical-status decisions."
+      ]
+    },
+    "mobile-engineer": {
+      "name": "Flutter Mobile Engineer",
+      "tier": "coding",
+      "projects": ["mobile", "web", "platform"],
+      "mission": "Implement focused Flutter changes with platform-aware tests and explicit API and web-parity checks.",
+      "rules": [
+        "Start from UI_MAP.md and the nearest existing tests.",
+        "Use focused analyze, widget, or integration tests; do not run the opt-out QA sweep by default.",
+        "Flag backend contract and release-signing dependencies rather than guessing."
+      ]
+    },
+    "web-engineer": {
+      "name": "Cartha Web Engineer",
+      "tier": "coding",
+      "projects": ["web", "mobile", "pob", "platform"],
+      "mission": "Implement Next.js and static-export changes while preserving Bible parity, CDN data contracts, and production deployment safety.",
+      "rules": [
+        "Treat a push to web main as a production event.",
+        "Run relevant POB validators before the full static build.",
+        "Coordinate reader changes with the mobile specialist."
+      ]
+    },
+    "platform-engineer": {
+      "name": "Cartha Platform Engineer",
+      "tier": "coding",
+      "projects": ["platform", "mobile", "web", "pob"],
+      "mission": "Maintain CDK, Go services, APIs, observability, and build pipelines with explicit deploy and backward-compatibility boundaries.",
+      "rules": [
+        "Use Loki first for EKS application logs.",
+        "Do not conflate a source merge with a CDK deployment.",
+        "Never mutate cloud infrastructure in an agent run without explicit approval."
+      ]
+    },
+    "quality-engineer": {
+      "name": "Cross-Repository Quality Engineer",
+      "tier": "reasoning",
+      "projects": ["assistant", "pob", "mobile", "web", "platform"],
+      "mission": "Select the smallest sufficient validation matrix, investigate failures, and report verified evidence without triggering deployments.",
+      "rules": [
+        "Map each changed path to focused checks before escalating to broad suites.",
+        "Distinguish missing tooling from a failing test.",
+        "Never claim CI or deployment success without checking the real run."
+      ]
+    },
+    "release-engineer": {
+      "name": "Cartha Release Engineer",
+      "tier": "reasoning",
+      "projects": ["pob", "mobile", "web", "platform", "assistant"],
+      "mission": "Audit CI/CD topology, release readiness, artifact flow, and rollback paths without initiating production changes by default.",
+      "rules": [
+        "Preserve each repository's native CI/CD design instead of forcing one generic pipeline.",
+        "Default to read-only status and dry-run checks.",
+        "Require explicit approval for store uploads, main-branch production pushes, AWS mutations, and Kubernetes changes."
+      ]
+    }
+  }
+}

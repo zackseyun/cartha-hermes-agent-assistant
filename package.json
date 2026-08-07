@@ -5,12 +5,17 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "cartha-hermes-agent-assistant": "./scripts/install.mjs"
+    "cartha-hermes-agent-assistant": "./scripts/install.mjs",
+    "cartha-agents": "./scripts/cartha-agents.mjs"
   },
   "scripts": {
     "start": "node server.mjs",
     "dev": "HERMES_UI_PORT=5128 node --watch server.mjs",
-    "check": "node --check server.mjs && node --check public/app.js && node --check lib/*.mjs && node --check scripts/*.mjs && node --test tests/*.test.mjs && node scripts/test-runtime-store.mjs",
+    "check": "node --check server.mjs && node --check public/app.js && node --check lib/*.mjs && node --check scripts/*.mjs && node --test tests/*.test.mjs && node scripts/test-runtime-store.mjs && npm run agents:check",
+    "agents": "node scripts/cartha-agents.mjs",
+    "agents:list": "node scripts/cartha-agents.mjs list",
+    "agents:status": "node scripts/cartha-agents.mjs status",
+    "agents:check": "node scripts/cartha-agents.mjs check",
     "smoke": "node scripts/smoke.mjs",
     "install:stack": "node scripts/install.mjs",
     "searxng:start": "bash templates/searxng/start-searxng.sh",
@@ -31,6 +36,7 @@
     "lib",
     "public",
     "scripts",
+    "config",
     "templates",
     "native",
     "docs",

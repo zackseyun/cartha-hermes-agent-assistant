@@ -38,6 +38,61 @@ The installed runtime is **local-first**:
 
 Gemma 4 31B vision support depends on the Ollama/model build you install. Audio should usually be transcribed first, or routed through an audio-capable local model, then handed to the main agent/model for reasoning.
 
+## Cross-repository Cartha agents
+
+This repository is also the shared control plane for the Cartha engineering
+estate. The checked-in registry at `config/cartha-projects.json` describes:
+
+- `peoples-open-bible` — textual provenance and AWS CodeBuild operations;
+- `cartha.ai.mobile` — Flutter clients and self-hosted release workflows;
+- `cartha.website` — Next.js/static export and CodePipeline delivery;
+- `CarthaCdkService` — APIs, CDK, EKS services, and infrastructure pipelines;
+- this assistant — the local Hermes runtime and operator surface.
+
+Seven project-aware specialists are available: orchestrator, Bible steward,
+mobile engineer, web engineer, platform engineer, quality engineer, and release
+engineer. They reuse each repository's existing `CLAUDE.md`/canonical docs and
+native CI/CD instead of imposing a generic replacement pipeline.
+
+```bash
+# Inventory agents and repositories
+npm run agents:list
+npm run agents:status
+npm run agents:check
+
+# Inspect the exact prompt/context without starting a model
+npm run agents -- prompt \
+  --agent orchestrator \
+  --projects pob,web,mobile \
+  --task "Plan a cross-platform Bible Reader change"
+
+# Run a specialist in an isolated Hermes git worktree (default)
+npm run agents -- run \
+  --agent mobile-engineer \
+  --projects mobile,web \
+  --task "Implement the approved reader change and run focused checks"
+
+# Print a repository's native validation plan; add --execute to run it
+npm run agents -- validate --project pob
+```
+
+Repositories are expected as siblings of this checkout. Set
+`CARTHA_PROJECTS_ROOT=/path/to/parent` when they live elsewhere. Agent runs are
+worktree-first; the first listed project is writable and additional projects are
+read-only dependency context, so cross-repository edits use separate scoped runs.
+The runner never authorizes deploys, production pushes, cloud mutations,
+package publishing, or app-store submission by itself. Those actions still
+require an explicit task-level approval.
+
+### CI/CD design rule
+
+The control plane validates its registry and runner through this repository's
+existing Node 22 GitHub Actions job (`npm run check`). It does **not** turn
+GitHub Actions back on for People's Open Bible or duplicate Cartha's release
+pipelines. Each project keeps its native topology: CodeBuild/CodePipeline for
+POB and web operations, hybrid GitHub Actions + CodeBuild + self-hosted macOS
+for mobile, and CodePipeline/CodeBuild plus targeted workflows for platform.
+
 ## Quick start
 
 ```bash
