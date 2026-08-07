@@ -23,36 +23,66 @@
       "name": "People's Open Bible",
       "repository": "zackseyun/peoples-open-bible",
       "directory": "peoples-open-bible",
-      "contextFiles": ["README.md", "METHODOLOGY.md", "DOCTRINE.md", "REFERENCE_SOURCES.md", "docs/CODEBUILD_OPERATIONS.md"],
+      "contextFiles": [
+        "README.md",
+        "PHILOSOPHY.md",
+        "DOCTRINE.md",
+        "METHODOLOGY.md",
+        "REVISION_METHODOLOGY.md",
+        "REFERENCE_SOURCES.md",
+        "docs/REVISION_PROCESS.md",
+        "docs/CODEBUILD_OPERATIONS.md",
+        ".github/workflows/README.md",
+        "schema/verse.schema.json"
+      ],
       "validation": [
-        "python3 -m pytest -q tests",
-        "python3 tools/extra_texts/validate_catalog.py --all",
-        "python3 tools/lint_psalm_numbering.py --strict",
-        "python3 tools/validate_reader_corpus.py --skip-yaml-syntax --quiet --malformed-yaml warn"
+        "test -x .venv/bin/python || (python3.11 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt pytest)",
+        ".venv/bin/python tools/extra_texts/validate_catalog.py --all",
+        ".venv/bin/python tools/lint_psalm_numbering.py --strict",
+        ".venv/bin/python tools/validate_reader_corpus.py --skip-yaml-syntax --quiet --malformed-yaml warn",
+        ".venv/bin/python -m pytest -q tests"
       ],
       "ci": "AWS CodeBuild operational jobs; GitHub Actions intentionally disabled",
       "boundaries": [
         "Preserve commit-level provenance and per-verse rationale.",
         "Keep GitHub Actions disabled unless an explicit rollback is requested.",
         "Do not trigger AWS CodeBuild, EKS jobs, publishing, or summary generation without explicit approval.",
-        "Treat doctrinal, textual-critical, copyright, and source-license decisions as review-gated."
+        "Treat doctrinal, textual-critical, copyright, and source-license decisions as review-gated.",
+        "Keep Zone 2 consultation material and commercial translation wording out of committed drafts and artifacts.",
+        "Avoid whole-corpus scans unless required; this repository contains more than 600,000 tracked YAML records."
       ]
     },
     "mobile": {
       "name": "Cartha Mobile",
       "repository": "zackseyun/cartha.ai.mobile",
       "directory": "cartha.ai.mobile",
-      "contextFiles": ["CLAUDE.md", "cartha_ai_mobile/UI_MAP.md", "cartha_ai_mobile/DEPLOYMENT.md", ".github/workflows/README.md"],
+      "contextFiles": [
+        "CLAUDE.md",
+        "cartha_ai_mobile/CLAUDE.md",
+        "cartha_ai_mobile/UI_MAP.md",
+        "cartha_ai_mobile/DEPLOYMENT.md",
+        "cartha_ai_mobile/MACOS_DEPLOYMENT.md",
+        "cartha_ai_mobile/docs/QA_PLAYBOOK.md",
+        "cartha_ai_mobile/docs/QA_SYSTEM.md",
+        "cartha_ai_mobile/docs/QA_CONTROL_FLOW.md",
+        ".github/workflows/README.md",
+        "docs/CODEBUILD_DEPLOYS.md"
+      ],
       "validation": [
+        "cd cartha_ai_mobile && flutter pub get",
+        "cd cartha_ai_mobile && flutter gen-l10n",
         "cd cartha_ai_mobile && flutter analyze",
-        "cd cartha_ai_mobile && flutter test"
+        "cd cartha_ai_mobile && flutter test",
+        "cd cartha_ai_mobile && flutter build bundle --debug"
       ],
       "ci": "Hybrid GitHub Actions, AWS CodeBuild, and self-hosted macOS release runners",
       "boundaries": [
         "Maintain Flutter and hosted Next.js Bible Reader parity unless an exception is documented.",
         "Do not run the full QA sweep unless explicitly requested; prefer focused analyze/tests/builds.",
         "Keep production catalogs and editorial manifests behind APIs/CDN rather than in the mobile repository.",
-        "Never dispatch store uploads or production promotions without explicit approval."
+        "Never dispatch store uploads or production promotions without explicit approval.",
+        "Treat [apple-upload], [apple-window], and [deploy-apple] as release-affecting commit markers.",
+        "Fresh worktrees may require generated Dart, CocoaPods, and Gradle prerequisites before build failures are actionable."
       ]
     },
     "web": {
@@ -91,6 +121,28 @@
       ]
     }
   },
+  "relationships": [
+    {
+      "producer": "pob",
+      "consumer": "web",
+      "contract": "Website Bible content, provenance, search, and footnote synchronization"
+    },
+    {
+      "producer": "pob",
+      "consumer": "mobile",
+      "contract": "Mobile Bible export and reader-content contract"
+    },
+    {
+      "producer": "platform",
+      "consumer": "web",
+      "contract": "Website hosting and API contract"
+    },
+    {
+      "producer": "platform",
+      "consumer": "mobile",
+      "contract": "Mobile API, authentication, media, and production-data contract"
+    }
+  ],
   "agents": {
     "orchestrator": {
       "name": "Cartha Orchestrator",

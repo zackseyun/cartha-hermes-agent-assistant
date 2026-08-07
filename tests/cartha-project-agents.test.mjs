@@ -42,6 +42,7 @@ test("composes a prompt with CI, boundaries, context, and the requested task", (
   assert.match(prompt, /Flutter and hosted Next\.js Bible Reader parity/u);
   assert.match(prompt, /Do not push, merge, deploy/u);
   assert.match(prompt, /PLANNING CONTEXT ONLY/u);
+  assert.match(prompt, /pob -> web: Website Bible content/u);
   assert.doesNotMatch(prompt, /Local path:/u);
   assert.match(prompt, /Plan a reader change without deploying it\./u);
 });
@@ -90,6 +91,12 @@ test("registry validator rejects unknown project references", () => {
   const copy = structuredClone(registry);
   copy.agents.orchestrator.projects.push("missing");
   assert.throws(() => validateRegistry(copy), /unknown project missing/u);
+});
+
+test("registry validator rejects unknown relationship endpoints", () => {
+  const copy = structuredClone(registry);
+  copy.relationships[0].consumer = "missing";
+  assert.throws(() => validateRegistry(copy), /unknown consumer missing/u);
 });
 
 test("CLI dry-run keeps executable work scoped to one primary project", async () => {
