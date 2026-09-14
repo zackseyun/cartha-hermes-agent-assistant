@@ -112,3 +112,7 @@ The formatter stays inside the founder profile and the current user turn. Genera
 The integration is one presentation wrapper around the existing message-parts element, installed with the same fail-closed overlay installer. Scope and parser tests cover fallback/missing/empty/immature/mature data, cross-turn leakage, failed tools, unexpected rows and text-only treatment of potentially hostile content. The report uses Chillax/Poppins and respects the existing chat layout rather than adding another chat surface.
 
 Presentation QA: 33 report/chat tests passed and the source-mode desktop build passed. Native inspection of the existing Graphic Bible conversation confirmed the three values come from its saved tool payload, its main report is readable without expanding technical details, and the evidence disclosure opens/closes correctly. The historical transcript is preserved. The app was left showing the concise report; no new analytics query or outbound action was required to restyle it.
+
+## Alfred / Spotlight launcher
+
+`python3 founder/install_app_launcher.py` installs `/Applications/Hermes App.app`, registers it with LaunchServices and imports its Spotlight metadata. Search **Hermes App**. The launcher starts the existing founder source-mode desktop and packages the existing generated icon as ICNS; it does not sign or modify the Electron application bundle. Its bundle identifier is `com.cartha.hermes-founder-launcher`.
