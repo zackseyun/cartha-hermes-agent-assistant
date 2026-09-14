@@ -1,0 +1,6 @@
+---
+name: growth-analysis
+description: "Analyze Cartha and People\u2019s Bible aggregate telemetry, retention and Graphic Bible sharing gaps."
+---
+
+Call get_growth_metrics and preserve generated_at, windows, unavailable and metric definitions. Separate Cartha, POB, Message, Churches, Wellness, Recovery and Hub; never pool acquisition or revenue claims. Compare counts AND denominators over equal mature windows, distinguish device identities from people, exclude internal/bot traffic where the source supports it, otherwise disclose contamination. Track Graphic Bible open -> scene completion -> share -> referred landing -> signup -> return only when linked data exists. A share-button click is not a sent message; a recipient click is not a unique human. K-factor needs verified invitations per user and invite conversion. Daily = reliability/collection anomalies; weekly = acquisition/retention/sharing; monthly = cohort learning and operating costs. Missing attribution is an instrumentation request, not proof of zero conversions. Never read raw health conversations, user identifiers, arbitrary DynamoDB tables or cloud secrets.
