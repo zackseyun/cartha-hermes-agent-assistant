@@ -116,3 +116,5 @@ Presentation QA: 33 report/chat tests passed and the source-mode desktop build p
 ## Alfred / Spotlight launcher
 
 `python3 founder/install_app_launcher.py` installs `/Applications/Hermes App.app`, registers it with LaunchServices and imports its Spotlight metadata. Search **Hermes App**. The launcher starts the existing founder source-mode desktop and packages the existing generated icon as ICNS; it does not sign or modify the Electron application bundle. Its bundle identifier is `com.cartha.hermes-founder-launcher`.
+
+Launcher repair: Finder/Alfred's minimal PATH omitted Homebrew npm. `open_desktop.sh` now supplies the compatible Node and npm directories explicitly and writes startup diagnostics to `~/.hermes/profiles/founder/logs/desktop-launcher.log`. A minimal-environment launch succeeded; a regression test checks PATH precedence and source-mode arguments without loading shell startup files.
