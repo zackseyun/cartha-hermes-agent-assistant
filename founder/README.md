@@ -31,7 +31,7 @@ The September 14 setup read the company corpus's current working flight, GTM cus
 - **Engineering:** local approval queue only. `create_codex_task` explicitly returns `awaiting_approval` and `dispatched: false`; it does not create a Codex app task, run a CLI agent, create a GitHub issue, or change production. Human-approved dispatch remains a separate integration.
 - **Messaging:** no Telegram/WhatsApp token/session configured. Local CLI is the initial interface.
 
-The independent noon-Pacific analytics email remains unchanged. A separate 9 AM Pacific `Founder Brief` Hermes cron definition is staged PAUSED, pending OAuth and end-to-end verification. No gateway service has been enabled. Local cron outputs, once enabled, live under the profile's `cron/output/`; they are not emailed or proactively pushed to a phone.
+The independent noon-Pacific analytics email remains unchanged. The separate 9 AM Pacific `Founder Brief` Hermes cron job is ACTIVE. Root-store ChatGPT OAuth, a real founder_brief tool/model run, and a manual cron run all passed on September 14. The founder launchd gateway is enabled at login and running; its cron-only mode does not enable messaging. Local cron outputs, once enabled, live under the profile's `cron/output/`; they are not emailed or proactively pushed to a phone.
 
 ## Finish authentication and validate
 
@@ -72,3 +72,7 @@ No clinical, revenue, legal-entity, asset-transfer, current store-state, or conv
 The official Electron interface was built and opened using source mode, without invoking local codesign. It runs from `~/.hermes/hermes-agent/apps/desktop` and shows the founder profile. It is not a packaged `/Applications/Hermes.app` installation. Reopen with `founder/open_desktop.sh`, or the `Hermes Founder.command` shortcut on Zack's Desktop. This mode uses the existing Electron runtime; do not run the signing-based pack/installer path.
 
 The build needed Node 24.19.0 from the local Codex runtime rather than the system Node 24.5.0. npm's upstream desktop dependency audit reported 12 advisories (6 high); the version check still reports Hermes current. These are unresolved upstream dependencies, not a security audit or a clean bill of health.
+
+## Activation verification — September 14, 2026
+
+ChatGPT OAuth saved successfully in the shared root store. The founder profile completed a real model/tool brief (`20260914_010132_a3ab67`). Cron job `d98241cad25c` completed execution `0448694f022f4778bf3c8d9c793a3338` successfully at 01:03 Pacific; next wake verified as September 14 at 09:00 Pacific. Delivery is local, not email/Telegram/WhatsApp. The launchd service is `ai.hermes.gateway-founder` with RunAtLoad and KeepAlive enabled. The Mac must remain awake for on-time runs. Calendar and actual engineering dispatch remain unconnected, as documented above.
