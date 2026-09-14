@@ -36,12 +36,12 @@ The independent noon-Pacific analytics email remains unchanged. A separate 9 AM 
 ## Finish authentication and validate
 
 ```sh
-founder auth add openai-codex --type oauth
+hermes -p default auth add openai-codex --type oauth
 founder chat --oneshot -Q -s founder-brief -q 'Call founder_brief and give me a concise brief. Read only; create no records.'
 founder cron list --all
 ```
 
-Use Hermes's own login, not copied Codex refresh tokens. OpenAI subscription limits still apply; the exact Hermes quota semantics are not documented. External tools such as paid search, image generation and messaging services are not bundled by this OAuth choice. We configured no such paid tools.
+Use Hermes's own root login store, not copied Codex refresh tokens. On upstream `5eb99eb2`, adding the first OAuth pool credential directly to a blank named profile can report success without persisting it: `persist_pool_entries` takes the borrowed-root update-only path even when there is no root row. Root login avoids that path; the founder profile uses Hermes's supported shared-root credential lookup. OpenAI subscription limits still apply; the exact Hermes quota semantics are not documented. External tools such as paid search, image generation and messaging services are not bundled by this OAuth choice. We configured no such paid tools.
 
 After the actual OAuth/model/tool test succeeds, resume the staged job and install/start ONE gateway for the founder profile. Choose local output or explicitly configure the user's requested messaging channel and allowlist. Verify the next wake is in the future. Do not run multiple agent processes writing this profile concurrently; finish CLI QA before starting the gateway. The Mac must be awake/available for local scheduling. Do not claim scheduled delivery is live before this validation.
 
@@ -66,3 +66,9 @@ The operations directory contains private business records and must be backed up
 - [OpenAI authentication documentation](https://learn.chatgpt.com/docs/auth)
 
 No clinical, revenue, legal-entity, asset-transfer, current store-state, or conversion claims were inferred from the older research.
+
+## Desktop access
+
+The official Electron interface was built and opened using source mode, without invoking local codesign. It runs from `~/.hermes/hermes-agent/apps/desktop` and shows the founder profile. It is not a packaged `/Applications/Hermes.app` installation. Reopen with `founder/open_desktop.sh`, or the `Hermes Founder.command` shortcut on Zack's Desktop. This mode uses the existing Electron runtime; do not run the signing-based pack/installer path.
+
+The build needed Node 24.19.0 from the local Codex runtime rather than the system Node 24.5.0. npm's upstream desktop dependency audit reported 12 advisories (6 high); the version check still reports Hermes current. These are unresolved upstream dependencies, not a security audit or a clean bill of health.
