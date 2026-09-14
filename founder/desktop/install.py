@@ -16,4 +16,10 @@ for name in ['founder-home.tsx','founder-home.css','founder-home.test.tsx']:
     shutil.copy2(ROOT/name,TARGET/name)
 shutil.copytree(ROOT/'assets',TARGET/'assets',dirs_exist_ok=True)
 intro.write_text(s)
+icon_target=TARGET.parents[2]/'public/apple-touch-icon.png'
+icon=ROOT/'founder-dock-icon.png'
+if icon.exists():
+    if icon_target.exists() and not (ROOT/'upstream-icon.backup.png').exists():
+        shutil.copy2(icon_target,ROOT/'upstream-icon.backup.png')
+    shutil.copy2(icon,icon_target)
 print('Founder home overlay installed; other profiles retain their original intro.')

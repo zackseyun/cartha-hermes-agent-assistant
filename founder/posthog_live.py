@@ -7,7 +7,25 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from analytics_filters import clean_where, sqlstr
 
-EVENTS=['$pageview','bible_graphic_story_opened','bible_graphic_story_panel_viewed','bible_graphic_story_shared',
+SCHEMA_VERSION=3
+# Inspected mobile _formatEventName emits Title Case. Hosted engagement emits
+# pob_* events. Keep contracts separate: legacy "shared" is not a delivered share.
+GRAPHIC_EVENTS={
+ 'Bible Graphic Story Opened':'opened',
+ 'Bible Graphic Story Panel Viewed':'panel_viewed',
+ 'Bible Graphic Story Shared':'legacy_share_action',
+ 'pob_graphic_story_opened':'opened',
+ 'pob_graphic_story_panel_entered':'panel_entered',
+ 'pob_graphic_story_panel_viewed':'panel_viewed',
+ 'pob_graphic_story_engagement':'engagement_flush',
+ 'pob_graphic_story_all_verses_exposed':'scripture_exposed',
+ 'pob_graphic_story_share_clicked':'share_intent',
+ 'pob_graphic_story_link_copied':'link_copied',
+ 'pob_graphic_story_native_share_completed':'share_sheet_completed',
+ 'pob_graphic_story_shared':'legacy_share_action',
+ 'pob_graphic_story_shared_link_opened':'shared_link_arrival',
+}
+EVENTS=['$pageview',*GRAPHIC_EVENTS,'signup_completed',
         'Auth Phone Failed','Social Auth Error','Client Uncaught Error','dm_send_failed']
 HOSTS={'Cartha website':['cartha.com','www.cartha.com'], 'People’s Open Bible':['peoplesbible.com','www.peoplesbible.com','pob.cartha.com'],
        'Message Church':['message.cartha.com'],'Cartha web app':['app.cartha.com','app.cartha.ai'],
@@ -34,7 +52,42 @@ def build_query(days, now, cfg):
       countIf(timestamp < {start}), uniqIf(distinct_id,timestamp < {start}), max(timestamp)
       FROM events WHERE timestamp >= {previous} AND timestamp < {end}
       AND event IN ({','.join(map(sqlstr,EVENTS))}) AND ({clean_where(cfg)})
-      GROUP BY event,product ORDER BY product,event LIMIT 100'''
+      GROUP BY event,product ORDER BY product,event LIMIT 256'''
+
+def build_funnel_query(cfg, now):
+    """First observed non-self shared-link arrival -> canonical signup, 7-day window.
+    Use PostHog person_id to honor SDK identify merges; never return identifiers.
+    Legacy 'Signup Completed' is an alias, not a second signup event.
+    """
+    def dt(d):return "toDateTime("+sqlstr(d.strftime('%Y-%m-%d %H:%M:%S'))+", 'UTC')"
+    valid_share="match(toString(coalesce(properties.share_id,'')), '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$')"
+    entry=f"event='pob_graphic_story_shared_link_opened' AND {valid_share} AND lower(toString(coalesce(properties.self_open,''))) IN ('false','0')"
+    converted="arrivals>0 AND signups>0 AND first_signup>=first_arrival AND first_signup<=first_arrival+INTERVAL 7 DAY"
+    mature=f"arrivals>0 AND first_arrival<={dt(now-timedelta(days=7))}"
+    return f'''SELECT countIf(arrivals>0),countIf({converted}),countIf({mature}),countIf(({mature}) AND ({converted}))
+      FROM (SELECT person_id, countIf({entry}) AS arrivals, minIf(timestamp,{entry}) AS first_arrival,
+      countIf(event='signup_completed') AS signups,minIf(timestamp,event='signup_completed') AS first_signup
+      FROM events WHERE timestamp>={dt(now-timedelta(days=28))} AND timestamp<{dt(now)}
+      AND event IN ('pob_graphic_story_shared_link_opened','signup_completed')
+      AND notEmpty(toString(person_id)) AND toString(person_id)!='00000000-0000-0000-0000-000000000000'
+      AND ({clean_where(cfg)}) GROUP BY person_id)'''
+
+def funnel_result(raw):
+    rows=raw.get('results',[])
+    if len(rows)!=1 or len(rows[0])!=4:raise ValueError('Unexpected funnel shape')
+    arrived,converted,matured,matured_converted=rows[0]
+    if any(type(v) not in (int,float) or v<0 for v in rows[0]) or converted>arrived or matured>arrived or matured_converted>matured:
+        raise ValueError('Invalid funnel counts')
+    return {'status':'available','lookback_days':28,'conversion_window_days':7,
+      'arriving_posthog_identities':arrived,'linked_signups_so_far':converted,
+      'matured_arriving_identities':matured,'matured_linked_signups':matured_converted,
+      'matured_conversion_rate':matured_converted/matured if matured else None,
+      'provider_last_refresh':raw.get('last_refresh'),'provider_cached':bool(raw.get('is_cached')),
+      'scope':'First observed valid non-self hosted shared-link arrival -> canonical signup_completed on the same PostHog person; ordered within 7 days.',
+      'limitations':['Unmatured cohorts are not failures; no mature denominator means no conversion rate.',
+        'Identity stitching depends on existing PostHog identify calls. Cross-device and browser-to-native continuity are not independently verified.',
+        'Shared IDs and locally recorded self-open flags do not prove a unique human recipient or exclude every scanner.',
+        'This measures observed attributed signups, not causal lift or viral coefficient. Native clipboard-only shares without gn_share are outside this funnel.']}
 
 def query(cfg, sql):
     # No caller-controlled endpoint, project, query text, field names or secrets.
@@ -57,7 +110,7 @@ def fetch(home: Path, days=1):
         try:
             d=json.loads(cache.read_text())
             age=time.time()-d.get('cached_at_epoch',0)
-            if d.get('status')=='available' and 0<=age<300:
+            if d.get('schema_version')==SCHEMA_VERSION and d.get('status')=='available' and 0<=age<300:
                 return {**d,'connection':'direct_posthog','cache_age_seconds':round(age),'served_from_cache':True}
         except (OSError, ValueError, TypeError):
             pass  # A corrupt cache is not a reason to skip a live query or its fallback.
@@ -68,8 +121,13 @@ def fetch(home: Path, days=1):
             if len(row)!=7 or row[0] not in EVENTS or row[1] not in [*HOSTS,'Unattributed / native']:
                 raise ValueError('Unexpected aggregate shape')
             if any(type(v) not in (int,float) or v<0 for v in row[2:6]):raise ValueError('Invalid count')
-            rows.append(dict(event=row[0],product=row[1],count=row[2],identities=row[3],previous_count=row[4],previous_identities=row[5],latest_event=row[6]))
+            rows.append(dict(event=row[0],metric=GRAPHIC_EVENTS.get(row[0],row[0]),product=row[1],count=row[2],identities=row[3],previous_count=row[4],previous_identities=row[5],latest_event=row[6]))
+        try:
+            funnel=funnel_result(query(cfg,build_funnel_query(cfg,now)))
+        except Exception as exc:
+            funnel={'status':'unavailable','error_type':type(exc).__name__,'reason':'Funnel query failed; event counts remain available.'}
         result={'status':'available','connection':'direct_posthog','source':'https://us.posthog.com/project/509180',
+          'schema_version':SCHEMA_VERSION,'graphic_signup_funnel':funnel,
           'queried_at':now.isoformat(),'provider_last_refresh':raw.get('last_refresh'),'provider_cached':bool(raw.get('is_cached')),
           'window':{'start':(now-timedelta(days=days)).isoformat(),'end':now.isoformat(),'days':days,'comparison':'preceding equal-length rolling window'},
           'metrics':rows,'events_checked':EVENTS,'cached_at_epoch':time.time(),'served_from_cache':False,
@@ -77,7 +135,8 @@ def fetch(home: Path, days=1):
             'Distinct identities are not verified humans; do not add them across events or products.',
             'Native/unrecognized hosts remain unattributed; do not guess product ownership.',
             'Graphic shared event in inspected mobile source means copied link, not delivered message.',
-            'No linked recipient, signup or retention attribution: viral coefficient and causal uplift remain unavailable.',
+            'Use graphic_signup_funnel for ordered observed attribution; viral coefficient, retention and causal uplift remain unavailable.',
+            'Hosted legacy shared overlaps link_copied/native_share_completed. Do not sum them; share intent, clipboard copy and completed share sheet are distinct.',
             'Existing founder-report test/internal traffic exclusions reused; unidentified bot/test traffic may remain.',
             'No returned row means no matching observed event in these windows, not proof instrumentation works.']}
         home.mkdir(parents=True,exist_ok=True,mode=0o700)
