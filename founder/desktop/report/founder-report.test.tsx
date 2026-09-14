@@ -1,9 +1,9 @@
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { reportFromTurn, reportView, unwrapGrowth } from './report-model'
+import { reportFromTurn, reportView, unwrapGrowth, growthDecision, SIGNAL_LABELS, requestGrowthAssessment } from './report-model'
 import { FounderReportCard } from './founder-report'
-vi.mock('@/app/chat/composer/focus',()=>({requestComposerInsert:vi.fn(),requestComposerFocus:vi.fn()}))
-const data={status:'available',connection:'direct_posthog',source:'https://us.posthog.com/project/509180',queried_at:'2026-09-14T10:00:00Z',metrics:[],graphic_signup_funnel:{status:'available',lookback_days:28,arriving_posthog_identities:4,linked_signups_so_far:0,matured_arriving_identities:0,matured_linked_signups:0}}
+vi.mock('@/app/chat/composer/focus',()=>({requestComposerInsert:vi.fn(),requestComposerFocus:vi.fn(),requestComposerSubmit:vi.fn()}))
+const data={status:'available',connection:'direct_posthog',source:'https://us.posthog.com/project/509180',queried_at:'2026-09-14T10:00:00Z',metrics:[],graphic_signup_funnel:{status:'available',lookback_days:28,conversion_window_days:7,arriving_posthog_identities:4,linked_signups_so_far:0,matured_arriving_identities:0,matured_linked_signups:0}}
 afterEach(cleanup)
 describe('Founder report presentation',()=>{
   it('reads nested MCP envelopes, never free-form narrative',()=>{
@@ -15,7 +15,7 @@ describe('Founder report presentation',()=>{
   it('shows immature conversion as not ready, never zero percent',()=>{
     render(<FounderReportCard data={data}/>)
     expect(screen.getByText('Too early to judge')).toBeTruthy()
-    expect(screen.getByText('—')).toBeTruthy()
+    expect(screen.getByText('Not ready')).toBeTruthy()
     expect(screen.queryByText('0.0%')).toBeNull()
     expect(screen.getByText(/This is not a 0% conversion rate/)).toBeTruthy()
   })
@@ -38,6 +38,37 @@ describe('Founder report presentation',()=>{
     expect(container.querySelector('details')?.open).toBe(false)
     expect(screen.getByText('Activity counts, sources & limitations')).toBeTruthy()
     expect(screen.getByRole('button',{name:'Ask about this report'})).toBeTruthy()
+  })
+  it('puts stale evidence ahead of an optimistic activity headline',()=>{
+    const now=Date.parse(data.queried_at)
+    expect(growthDecision(data,now).title).toBe('Don’t judge signup conversion yet.')
+    expect(growthDecision(data,now+7*3600000).title).toBe('Refresh this before making a growth decision.')
+    expect(growthDecision({...data,queried_at:'invalid'},now).stale).toBe(true)
+  })
+  it('does not confuse mature conversion with proven improvement',()=>{
+    const d={...data,graphic_signup_funnel:{...data.graphic_signup_funnel,matured_arriving_identities:4}}
+    expect(growthDecision(d,Date.parse(data.queried_at)).title).toContain('not improvement')
+  })
+  it('hands a refresh to the agent only on click, respecting draft protection',()=>{
+    const refresh=vi.fn()
+    const {rerender}=render(<FounderReportCard data={data} onRefresh={refresh}/>)
+    expect(refresh).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button',{name:'Refresh & assess'}));expect(refresh).toHaveBeenCalledTimes(1)
+    rerender(<FounderReportCard data={data} onRefresh={refresh} refreshBlocked="Unsent draft preserved"/>)
+    expect((screen.getByRole('button',{name:'Refresh & assess'}) as HTMLButtonElement).disabled).toBe(true)
+  })
+  it('protects drafts and busy turns at the dispatch boundary',()=>{
+    const submit=vi.fn((_text:string,_options:{target:'main'})=>true);const ready={hasDraft:false,running:false,requested:false}
+    for(const field of ['hasDraft','running','requested'])expect(requestGrowthAssessment({...ready,[field]:true},submit).accepted).toBe(false)
+    expect(submit).not.toHaveBeenCalled()
+    expect(requestGrowthAssessment(ready,submit).accepted).toBe(true)
+    expect(submit).toHaveBeenCalledTimes(1)
+    expect(submit.mock.calls[0][0]).toContain('read-only')
+    expect(requestGrowthAssessment(ready,()=>false).notice).toContain('try again')
+  })
+  it('uses plain English for technical signals',()=>{
+    expect(SIGNAL_LABELS.engagement_flush).toBe('Reading activity recorded')
+    expect(SIGNAL_LABELS.legacy_share_action).toContain('overlap')
   })
   it('never borrows another user turn, prose, failed tool, or future result',()=>{
     const user={id:'u',role:'user',content:[{type:'text',text:'Show Graphic Bible growth'}]}

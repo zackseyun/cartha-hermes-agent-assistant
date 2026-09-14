@@ -114,10 +114,25 @@ def get_growth_metrics(window_days: int=1):
     """Read direct PostHog aggregates for 1, 7 or 28 days; 5-minute cache, explicit report fallback."""
     from posthog_live import fetch
     live=fetch(HOME,window_days)
-    if live['status']=='available':return live
+    schedule=get_review_schedule()
+    if live['status']=='available':return {**live,'review_schedule':schedule}
     report=get_report_metrics()
-    return {**report,'connection':'report_fallback','live_query':live,
+    return {**report,'connection':'report_fallback','live_query':live,'review_schedule':schedule,
             'warning':'Live PostHog unavailable. This is an older report, not the requested live window.'}
+
+def get_review_schedule():
+    """Describe the existing job; never create or mutate a schedule."""
+    try:
+        payload=json.loads((HOME.parent/'cron/jobs.json').read_text())
+        jobs=payload.get('jobs',[]) if isinstance(payload,dict) else payload
+        if not isinstance(jobs,list):return {'status':'unavailable'}
+        job=next(j for j in jobs if isinstance(j,dict) and j.get('id')=='d98241cad25c')
+        next_at=timestamp(job['next_run_at'])
+        if job.get('enabled') is not True or next_at<=now():return {'status':'unavailable'}
+        return {'status':'scheduled','next_at':next_at,'name':'Founder Brief','checked_at':now(),
+                'note':'Local Mac must be awake; this is scheduled, not guaranteed delivery.'}
+    except (OSError,ValueError,KeyError,TypeError,StopIteration):
+        return {'status':'unavailable'}
 
 def get_business_context():
     p=HOME/'context.json'

@@ -118,3 +118,11 @@ Presentation QA: 33 report/chat tests passed and the source-mode desktop build p
 `python3 founder/install_app_launcher.py` installs `/Applications/Hermes App.app`, registers it with LaunchServices and imports its Spotlight metadata. Search **Hermes App**. The launcher starts the existing founder source-mode desktop and packages the existing generated icon as ICNS; it does not sign or modify the Electron application bundle. Its bundle identifier is `com.cartha.hermes-founder-launcher`.
 
 Launcher repair: Finder/Alfred's minimal PATH omitted Homebrew npm. `open_desktop.sh` now supplies the compatible Node and npm directories explicitly and writes startup diagnostics to `~/.hermes/profiles/founder/logs/desktop-launcher.log`. A minimal-environment launch succeeded; a regression test checks PATH precedence and source-mode arguments without loading shell startup files.
+
+## Recommendation-first growth assessment
+
+The report now prioritizes a scoped recommendation over raw metrics. Stale/unknown timestamps take precedence; mature conversion is described as an observation, not proof of improvement. Primary copy avoids cohort/schema jargon. Evidence rows translate technical event names. Light mode uses dark teal/amber text rather than pale accents; dark mode retains the prior palette. The three light-mode text colors test at approximately 6.8–7.0:1 against white.
+
+`Refresh & assess` dispatches a fixed read-only assessment through Hermes's existing visible-composer submit path. It is disabled for an unsent draft, attachments, or a running turn, and separately guarded at the dispatch boundary; it does not erase a draft or claim a task succeeded merely because it was requested. Historical messages stay historical; a fresh assessment is a new response. The existing morning job's next time is read from its actual job record and included in tool results without creating a new schedule.
+
+Growth instructions require the agent to perform available read-only checks, distinguish a current query from current event collection, avoid blanket product freezes, and identify the remaining human-dependent test. Mac unlock is needed to finish native visual and button-path verification for this iteration; automated tests/build and a fresh real analytics assessment are separate evidence.

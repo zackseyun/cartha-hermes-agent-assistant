@@ -48,5 +48,14 @@ class OperationsTests(unittest.TestCase):
         env=clean_environment({'PATH':'/bin','OPENROUTER_API_KEY':'secret','OPENAI_API_KEY':'secret','AWS_PROFILE':'production','PYTHONPATH':'/unsafe'})
         self.assertEqual(env['PATH'],'/bin')
         for key in ('OPENROUTER_API_KEY','OPENAI_API_KEY','AWS_PROFILE','PYTHONPATH'):self.assertNotIn(key,env)
+    def test_review_schedule_reports_only_enabled_future_job(self):
+        ops.HOME=Path(self.temp.name)/'operations'
+        cron=ops.HOME.parent/'cron';cron.mkdir()
+        p=cron/'jobs.json'
+        job={'id':'d98241cad25c','enabled':True,'next_run_at':'2099-01-01T09:00:00-08:00'}
+        p.write_text(json.dumps({'jobs':[job]}))
+        self.assertEqual(ops.get_review_schedule()['status'],'scheduled')
+        job['enabled']=False;p.write_text(json.dumps({'jobs':[job]}))
+        self.assertEqual(ops.get_review_schedule()['status'],'unavailable')
 
 if __name__=='__main__':unittest.main()
