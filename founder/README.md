@@ -14,7 +14,7 @@ This is a local founder-operations pilot, not a production CRM or an autonomous 
 
 The `founder` launcher strips inherited API/cloud variables; provider selection is explicit.
 This is a tool boundary, not an OS sandbox: the local runtime runs as the Mac user.
-No arbitrary shell, filesystem, browser, cloud, sending or database-query tools are exposed.
+No arbitrary shell, filesystem, browser, cloud, sending or database-query tools are exposed. The Operations process can retrieve exactly the existing report secret and query fixed aggregates; credentials never enter prompts or UI.
 Only skills, memory, session search and the 13 operations methods are enabled on CLI, cron and configured messaging surfaces.
 MCP sampling is disabled. Business writes are parameterized, audit logged, and bounded.
 
@@ -23,7 +23,7 @@ MCP sampling is disabled. Business writes are parameterized, audit logged, and b
 The September 14 setup read the company corpus's current working flight, GTM customer-language research, segmented distribution plan, and September 13 asset-exit decision desk. It also inspected current task summaries and the founder-report implementation. Dated claims stay dated; no assertion that every active project was fully audited.
 
 - **Sales:** 250 public-business research contacts imported from the corpus's August 20 interview queue. They remain uncontacted leads, not verified current contacts, warm prospects, or authorized recipients. Existing records are never overwritten on reimport. Emails and phone numbers are not imported in this pilot. Personal Messages/WhatsApp history is excluded. No fabricated Hugo/Mishaal/example relationships are seeded.
-- **Growth:** read-only import of the existing founder-report S3 JSON archive. No Lambda invocation, raw DynamoDB access, or duplicate email. Snapshot age is returned on every read; after 36 hours it is stale. Daily reports do not contain all weekly account metrics or a verified Graphic Bible referral funnel.
+- **Growth:** direct read-only PostHog aggregates for 1, 7 or 28 days, compared with the preceding equal rolling window. Fixed allowlisted event and product groupings, internal/test exclusions, five-minute cache and explicit query timestamps. Live failure falls back to the existing S3 report with its date and an explicit warning. No arbitrary SQL, raw person properties, Lambda invocation, DynamoDB access or duplicate email. The Graphic Bible recipient/signup/retention funnel remains unverified.
 - **Strategy:** selected dated corpus documents are imported with source paths and hashes. Company strategy remains canonical in the corpus; these are readable snapshots, not a second task board.
 - **Experiments:** structured register is ready but empty until actual experiments and decision criteria are supplied.
 - **Follow-ups:** explicit timezone-aware dates only; none inferred from old email opens. Idempotent request IDs, completion state, and suppression guard.
@@ -76,3 +76,19 @@ The build needed Node 24.19.0 from the local Codex runtime rather than the syste
 ## Activation verification — September 14, 2026
 
 ChatGPT OAuth saved successfully in the shared root store. The founder profile completed a real model/tool brief (`20260914_010132_a3ab67`). Cron job `d98241cad25c` completed execution `0448694f022f4778bf3c8d9c793a3338` successfully at 01:03 Pacific; next wake verified as September 14 at 09:00 Pacific. Delivery is local, not email/Telegram/WhatsApp. The launchd service is `ai.hermes.gateway-founder` with RunAtLoad and KeepAlive enabled. The Mac must remain awake for on-time runs. Calendar and actual engineering dispatch remain unconnected, as documented above.
+
+## Founder home presentation overlay
+
+`desktop/` contains a reproducible local UI customization and the ImageGen concepts. Headings use the existing Cartha Chillax Medium asset; text uses its Poppins Regular asset. The new draft home offers Brief, Growth, Sales & follow-ups, Experiments, Engineering, Church research and Check connections. Buttons append guarded prompts through Hermes's composer bus and focus the composer; they do not submit automatically or overwrite existing drafts.
+
+Install with `python3 founder/desktop/install.py`, then build the existing Hermes desktop workspace in source mode. The installer adds only a founder-profile guard to the upstream fresh-draft Intro plus a self-contained component/CSS/assets. No empty Bot Chat ownership, sessions, tools, model settings, or gateway state changes. The available chat.empty plugin slot only supports existing sessions, not the new-draft intro, so this customization needs that narrow core integration. Source is versioned here; the installed upstream runtime intentionally has a local presentation overlay. Updates may require reapplying it; the installer rejects changed anchors rather than guessing.
+
+The PostHog report route was verified September 14 against the deployed Lambda source and selected configuration fields: `https://us.posthog.com`, project/environment `509180`, HogQLQuery API. The initial report-only connection has now been upgraded: get_growth_metrics queries that same PostHog project directly through a fixed read-only boundary. The home label describes this capability, not guaranteed availability or a claim that all events are instrumented.
+
+### Direct PostHog verification
+
+September 14: a non-cached request returned successfully from project 509180, with provider refresh timestamp and aggregate error counts. No checked Graphic Bible events were returned in that two-day comparison span; this does not prove zero product usage. Inspected mobile source emits `bible_graphic_story_shared` after clipboard copy, so it must not be described as a confirmed sent message. No IDs, paths, full URLs or raw event properties are exposed by the tool.
+
+The process uses the existing collector credential from AWS Secrets Manager `cartha/founder-report/config`; it does not create a new key or change key scopes. Read-only access is enforced by this fixed tool surface, not a claim that the preexisting key itself has no write permissions. A separately scoped service credential is advisable for a future server deployment. Only the fixed us.posthog.com/project 509180 route is accepted; a changed target fails closed.
+
+Verification after the live upgrade: 14 Python/MCP tests and 26 desktop UI/chat-regression tests passed. The source-mode desktop build passed. A real Hermes call returned `direct_posthog` with cache age and observed aggregates; the scheduled Founder Brief also completed successfully at 01:42 Pacific with direct results (execution `d2415d011aa645febf0c6ecea3776e53`). Native UI inspection confirmed Chillax/Poppins rendering, four workflow controls, the updated direct-query label, and correct Growth prompt insertion without automatic submission. The 9 AM Pacific next wake was preserved.

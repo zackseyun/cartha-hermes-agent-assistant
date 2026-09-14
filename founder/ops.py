@@ -102,13 +102,22 @@ def record_experiment(experiment_id: str, segment: str, hypothesis: str, metric:
 def get_experiment_results():
     with db() as c: return [{'id':r['id'],**json.loads(r['body'])} for r in c.execute('SELECT * FROM experiments ORDER BY id')]
 
-def get_growth_metrics():
+def get_report_metrics():
     p=HOME/'growth.json'
     if not p.exists(): return {'status':'unavailable','reason':'Aggregate report not imported; never interpret as zero'}
     data=json.loads(p.read_text())
     age=(datetime.now(timezone.utc)-datetime.fromisoformat(timestamp(data['data']['generated_at']))).total_seconds()/3600
     return {**data,'age_hours':round(age,1),'status':'stale' if age>36 else 'available',
       'scope':'Existing noon report, not a real-time Graphic Bible attribution funnel'}
+
+def get_growth_metrics(window_days: int=1):
+    """Read direct PostHog aggregates for 1, 7 or 28 days; 5-minute cache, explicit report fallback."""
+    from posthog_live import fetch
+    live=fetch(HOME,window_days)
+    if live['status']=='available':return live
+    report=get_report_metrics()
+    return {**report,'connection':'report_fallback','live_query':live,
+            'warning':'Live PostHog unavailable. This is an older report, not the requested live window.'}
 
 def get_business_context():
     p=HOME/'context.json'

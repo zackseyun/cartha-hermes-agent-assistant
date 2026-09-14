@@ -1,4 +1,4 @@
-import sys,tempfile,unittest,json
+import sys,tempfile,unittest,json,os
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import ops
@@ -7,9 +7,13 @@ from run_founder import clean_environment
 
 class OperationsTests(unittest.TestCase):
     def setUp(self):
+        self.previous=os.environ.get('CARTHA_POSTHOG_DISABLED');os.environ['CARTHA_POSTHOG_DISABLED']='1'
         self.temp=tempfile.TemporaryDirectory();ops.HOME=Path(self.temp.name)
         ops.update_contact('lead','Test Person','Test Church','churches','lead','fixture')
-    def tearDown(self): self.temp.cleanup()
+    def tearDown(self):
+        self.temp.cleanup()
+        if self.previous is None:os.environ.pop('CARTHA_POSTHOG_DISABLED',None)
+        else:os.environ['CARTHA_POSTHOG_DISABLED']=self.previous
     def test_followup_idempotency_and_due_dates(self):
         for _ in range(2):ops.create_followup('one','lead','2026-09-16T09:00:00-07:00','Ask for feedback')
         self.assertEqual(len(ops.get_stale_leads('2026-09-16T17:00:00Z')['followups']),1)

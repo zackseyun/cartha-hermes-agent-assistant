@@ -13,7 +13,7 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
     async def test_tools_and_missing_data(self):
         with tempfile.TemporaryDirectory() as directory:
             server=StdioServerParameters(command=sys.executable,args=[str(Path(__file__).resolve().parents[1]/'ops.py')],
-                env={**os.environ,'CARTHA_OPS_HOME':directory})
+                env={**os.environ,'CARTHA_OPS_HOME':directory,'CARTHA_POSTHOG_DISABLED':'1'})
             async with stdio_client(server) as (read,write):
                 async with ClientSession(read,write) as client:
                     await client.initialize()

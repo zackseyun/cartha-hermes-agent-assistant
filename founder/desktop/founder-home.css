@@ -1,0 +1,24 @@
+@font-face{font-family:FounderChillax;src:url('./assets/Chillax-Medium.otf') format('opentype');font-style:normal;font-weight:500;font-display:swap}
+@font-face{font-family:FounderPoppins;src:url('./assets/Poppins-Regular.ttf') format('truetype');font-style:normal;font-weight:400;font-display:swap}
+.founder-home{--founder-accent:#8dd7cb;width:min(100%,960px);padding:24px 28px;font-family:FounderPoppins,system-ui,sans-serif;color:var(--ui-text-primary);text-align:left;pointer-events:auto}
+.founder-eyebrow{font-size:11px;letter-spacing:.17em;color:var(--ui-text-secondary);margin:0 0 12px}
+.founder-home h1{font-family:FounderChillax,system-ui,sans-serif;font-size:clamp(25px,3vw,42px);font-weight:500;line-height:1.2;letter-spacing:-.03em;margin:0 0 12px}
+.founder-subtitle{font-size:14px;line-height:1.7;color:var(--ui-text-secondary);margin:0 0 28px}
+.founder-home .founder-brief,.founder-home .founder-workflow{display:flex;width:100%;justify-content:flex-start;white-space:normal;text-align:left;border-radius:12px;gap:18px;padding:22px;font-family:inherit;font-weight:400}
+.founder-home .founder-brief{background:color-mix(in srgb,var(--founder-accent) 12%,var(--ui-bg-quaternary));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--founder-accent) 45%,transparent);margin-bottom:16px}
+.founder-home .founder-brief:hover,.founder-home .founder-workflow:hover{background:var(--chrome-action-hover)}
+.founder-home button:focus-visible{outline:3px solid var(--ring);outline-offset:4px}
+.founder-home .founder-brief svg,.founder-home .founder-workflow svg{width:24px;height:24px;color:var(--founder-accent)}
+.founder-home .founder-brief svg:last-child,.founder-home .founder-workflow svg:last-child{margin-left:auto;width:19px;height:19px;flex-shrink:0}
+.founder-home strong{font-family:FounderChillax,system-ui,sans-serif;font-size:20px;font-weight:500;line-height:1.4;display:block}
+.founder-home .founder-brief strong{font-size:25px}
+.founder-home small{font-size:14px;line-height:1.7;color:var(--ui-text-secondary);display:block;margin-top:4px}
+.founder-workflows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.founder-home .founder-workflow{padding:20px 18px;min-height:104px}
+.founder-boundaries{display:flex;flex-wrap:wrap;gap:12px 24px;border-top:1px solid var(--ui-stroke-secondary);margin-top:24px;padding-top:18px;font-size:12px;line-height:1.6;color:var(--ui-text-secondary)}
+.founder-boundaries span{display:flex;align-items:center;gap:8px}.founder-boundaries svg{width:14px;height:14px;flex-shrink:0}
+.founder-home footer{margin-top:20px}.founder-secondary{display:flex;gap:20px;flex-wrap:wrap}.founder-secondary button{font-family:inherit;font-size:12px;line-height:1.6}
+.founder-guidance{font-size:12px;line-height:1.6;margin:14px 0 5px;color:var(--ui-text-secondary)}
+.founder-schedule{font-size:10px;line-height:1.6;color:var(--ui-text-secondary);margin:0}
+@media(max-width:850px){.founder-home{padding:18px}.founder-workflows{grid-template-columns:1fr}.founder-home .founder-workflow{min-height:76px;padding:14px}.founder-home h1{font-size:28px}.founder-subtitle{margin-bottom:18px}}
+@media(prefers-reduced-motion:reduce){.founder-home *{transition:none!important}}

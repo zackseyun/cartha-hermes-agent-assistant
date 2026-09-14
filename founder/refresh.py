@@ -66,4 +66,9 @@ if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--import-contacts',action='store_true');a=p.parse_args()
     refresh_context()
     if a.import_contacts: print('New research contacts:',import_contacts())
-    print('Aggregate report:',refresh_growth())
+    try:
+        print('Fallback aggregate report:',refresh_growth())
+    except Exception as exc:
+        # Direct PostHog is now primary; an S3 refresh failure must not prevent
+        # the scheduled agent from attempting its independent live query.
+        print('Fallback report refresh unavailable:',type(exc).__name__)

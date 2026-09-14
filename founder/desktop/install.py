@@ -1,0 +1,19 @@
+"""Reproducible local presentation overlay. Fails closed if upstream's anchor changes.
+Only the fresh-draft intro for the founder profile is replaced; Bot Chat ownership stays untouched.
+"""
+from pathlib import Path
+import shutil
+ROOT=Path(__file__).resolve().parent
+TARGET=Path.home()/'.hermes/hermes-agent/apps/desktop/src/components/chat'
+intro=TARGET/'intro.tsx'
+s=intro.read_text()
+anchor='  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))'
+if "from './founder-home'" not in s:
+    if s.count(anchor)!=1:raise RuntimeError('Upstream intro changed; review before applying')
+    s="import { useStore } from '@nanostores/react'\nimport { $activeGatewayProfile } from '@/store/profile'\nimport { FounderHome } from './founder-home'\n"+s
+    s=s.replace(anchor,anchor+"\n  const profile = useStore($activeGatewayProfile)\n  if (profile === 'founder') return <FounderHome />")
+for name in ['founder-home.tsx','founder-home.css','founder-home.test.tsx']:
+    shutil.copy2(ROOT/name,TARGET/name)
+shutil.copytree(ROOT/'assets',TARGET/'assets',dirs_exist_ok=True)
+intro.write_text(s)
+print('Founder home overlay installed; other profiles retain their original intro.')
