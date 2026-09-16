@@ -126,3 +126,28 @@ The report now prioritizes a scoped recommendation over raw metrics. Stale/unkno
 `Refresh & assess` dispatches a fixed read-only assessment through Hermes's existing visible-composer submit path. It is disabled for an unsent draft, attachments, or a running turn, and separately guarded at the dispatch boundary; it does not erase a draft or claim a task succeeded merely because it was requested. Historical messages stay historical; a fresh assessment is a new response. The existing morning job's next time is read from its actual job record and included in tool results without creating a new schedule.
 
 Growth instructions require the agent to perform available read-only checks, distinguish a current query from current event collection, avoid blanket product freezes, and identify the remaining human-dependent test. Mac unlock is needed to finish native visual and button-path verification for this iteration; automated tests/build and a fresh real analytics assessment are separate evidence.
+
+## Native launcher repair — September 16, 2026
+
+The shell-only `/Applications/Hermes App.app` exited with status 126 before its
+startup log opened: macOS denied execution of `founder/open_desktop.sh` under
+Documents (`Operation not permitted`). The installer now compiles a small AppKit
+launcher, signs only that wrapper using the normal local Apple Development
+identity, and verifies its signature. Electron is not modified or re-signed.
+The wrapper reads the startup script normally under its own app identity so
+macOS can mediate Documents permission, logs before starting the child, and
+shows a visible error on denied access or a nonzero exit. It does not reset TCC,
+bypass protections, move protected source, or change account connections.
+`HERMES_LAUNCHER_SIGNING_IDENTITY` can select an existing local signing identity;
+private Keychain authentication remains user-owned.
+
+Verification: Swift compilation, strict signature verification, and 18 Python
+checks passed. After user-owned signing authentication, the actual installed
+launcher opened Hermes Desktop with the founder profile and saved conversations
+visible. Runtime model initialization separately reported provider quota
+exhaustion (429); launch success does not establish a successful new model turn.
+No paid-provider fallback or usage-reset credit was used.
+
+Pending growth scope: prioritize Cartha Community, then basic downloads and DAU
+across all Zack's apps. Existing fixed PostHog queries are not a complete DAU or
+store-download connection; do not relabel event identities as those metrics.

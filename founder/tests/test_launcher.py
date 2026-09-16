@@ -17,4 +17,20 @@ class LauncherTests(unittest.TestCase):
             self.assertLess(paths.index('/Users/zackseyun/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin'),paths.index('/opt/homebrew/bin'))
             self.assertEqual(lines[1:],['desktop','--source','--skip-build'])
 
+    def test_native_launcher_requests_normal_access_and_reports_failure(self):
+        root=Path(__file__).resolve().parents[1]
+        source=(root/'desktop/Launcher.swift').read_text()
+        installer=(root/'install_app_launcher.py').read_text()
+        self.assertIn('Data(contentsOf: URL(fileURLWithPath: path))', source)
+        self.assertLess(source.index('Data(contentsOf: URL(fileURLWithPath: path))'),
+                        source.index('try child.run()'))
+        self.assertIn('child.currentDirectoryURL = home', source)
+        self.assertIn('child.standardError = log', source)
+        self.assertIn('task.terminationStatus != 0', source)
+        self.assertIn('alert.runModal()', source)
+        self.assertIn('NSDocumentsFolderUsageDescription', installer)
+        self.assertIn("'--verify','--strict'", installer)
+        for forbidden in ('tccutil', 'chmod 777', 'xattr -d', 'sudo'):
+            self.assertNotIn(forbidden, source + installer)
+
 if __name__=='__main__':unittest.main()
