@@ -13,6 +13,8 @@ def clean_environment(source):
 
 if __name__=='__main__':
     from codex_catalog import prepare_catalog
+    from install_codex_login import install
+    install(Path.home()/'.hermes/hermes-agent')
     try:
         prepare_catalog()
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:

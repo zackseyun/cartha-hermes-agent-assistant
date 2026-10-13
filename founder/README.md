@@ -19,15 +19,21 @@ the account's visible catalog. This repair does not invent model IDs or read
 credentials, and refuses to edit an unrecognized upstream layout.
 
 Hermes and Codex must also use the **same ChatGPT account**. The founder
-profile previously borrowed another account's global credential pool. Give
-it its own login rather than copying Codex's rotating refresh token:
+profile previously borrowed another account's global credential pool. It now
+explicitly sets `model.codex_auth_source: codex_cli`. The local compatibility
+overlay reads Codex's current access token without copying its rotating
+refresh token into Hermes. Main chat, auxiliary calls, and model discovery use
+that same account. Near expiry, renewal is delegated to Codex's managed
+`account/read` RPC; it never starts a Codex thread or grants native tool access.
+Other profiles retain their independent credential settings.
 
 ```bash
-hermes -p founder auth add openai-codex --type oauth --label 'Codex account'
+python founder/install_codex_login.py
 ```
 
-Approve the device sign-in with the account used by Codex, reopen Hermes,
-then choose **Refresh models** in the composer model picker. Account-scoped
+The founder launcher also reapplies the narrow overlay after upstream updates,
+refusing unrecognized anchors. Reopen Hermes and choose **Refresh models**
+in the composer model picker. Account-scoped
 discovery determines availability; only a completed inference verifies that
 a listed model works. Other profiles and paid-provider fallbacks stay unchanged.
 - Skills: founder-brief, growth-analysis, sales-pipeline, church-research, follow-up-manager, experiment-tracker, codex-engineering.
@@ -42,6 +48,13 @@ credential storage, never this repository or chat. Refresh the composer
 model picker after connecting; connecting a key does not select a paid model
 or enable fallback. Missing/expired Codex login must not be disguised by
 manually inserting model names into its account-scoped catalog.
+
+For the authorized AWS import, `connect_openrouter.py` accepts only an
+already-resolved `OPENROUTER_API_KEY` environment value supplied by the
+official AWS `asm-exec` wrapper. It validates the key with OpenRouter before
+saving it through Hermes' credential API, and prints neither the key nor
+raw request/exception details. The production ECS task definition supplied
+the exact secret ARN and JSON-key reference; no secret values entered chat.
 This is a tool boundary, not an OS sandbox: the local runtime runs as the Mac user.
 No arbitrary shell, filesystem, browser, cloud, sending or database-query tools are exposed. The Operations process can retrieve exactly the existing report secret and query fixed aggregates; credentials never enter prompts or UI.
 Only skills, memory, session search and the 13 operations methods are enabled on CLI, cron and configured messaging surfaces.

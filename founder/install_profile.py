@@ -12,7 +12,7 @@ config=config or {}
 if config_path.exists(): shutil.copy2(config_path,HOME/'config.before-founder.yaml')
 config.update({
  'max_concurrent_sessions':1,
- 'model':{'provider':'openai-codex','default':'gpt-5.6-sol'},
+ 'model':{'provider':'openai-codex','default':'gpt-5.6-sol','codex_auth_source':'codex_cli'},
  'timezone':'America/Los_Angeles',
  'fallback_providers':[],
  'agent':{'max_turns':12,'reasoning_effort':'medium','disabled_toolsets':['terminal','file','browser','code_execution','web','search','delegation','cronjob']},
