@@ -32,6 +32,12 @@ PATCHES = {
          '            except Exception:\n'
          '                return False\n'),
     ],
+    'hermes_cli/models.py': [
+        ('    parts: list[str] = []\n    try:\n',
+         '    if provider == "openai-codex":\n'
+         '        from hermes_cli.auth_codex_cli import catalog_identity\n'
+         '        parts.append(catalog_identity())\n'),
+    ],
 }
 
 
@@ -46,7 +52,12 @@ def install(hermes_root):
                 continue
             if content.count(anchor) != 1:
                 raise RuntimeError(f'Hermes {filename} changed; review login overlay before installing')
-            content = content.replace(anchor, insertion + anchor)
+            # The cache identity belongs after its list declaration; other
+            # overlays run before their existing branches.
+            if filename == 'hermes_cli/models.py':
+                content = content.replace(anchor, '    parts: list[str] = []\n' + insertion + '    try:\n')
+            else:
+                content = content.replace(anchor, insertion + anchor)
         changes[target] = content
     # All anchors are verified before changing anything. No auth store is edited.
     shutil.copy2(ROOT / 'codex_login.py', root / 'hermes_cli/auth_codex_cli.py')

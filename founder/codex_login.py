@@ -10,6 +10,19 @@ def uses_codex_login():
     return config.get('model', {}).get('codex_auth_source') == 'codex_cli'
 
 
+def catalog_identity():
+    """Cache provenance changes with the selected owner, without reading credentials."""
+    if not uses_codex_login():
+        return 'codex_auth_source=hermes'
+    home = Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex').expanduser()
+    path = home / 'auth.json'
+    try:
+        stamp = path.stat().st_mtime_ns
+    except FileNotFoundError:
+        stamp = 'missing'
+    return f'codex_auth_source=codex_cli:{path}:{stamp}'
+
+
 def resolve_codex_login(*, force_refresh=False):
     from hermes_cli.auth_codex import _import_codex_cli_tokens, _codex_access_token_is_expiring
     from hermes_cli.auth_constants import DEFAULT_CODEX_BASE_URL, AuthError
