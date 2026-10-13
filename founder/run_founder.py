@@ -1,4 +1,4 @@
-"""Credential-minimal launcher: ChatGPT OAuth only, no inherited API/cloud keys."""
+"""Credential-minimal launcher: saved profile providers, no inherited API/cloud keys."""
 import os
 import subprocess
 import sys

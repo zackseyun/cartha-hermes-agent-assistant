@@ -7,7 +7,7 @@ This is a local founder-operations pilot, not a production CRM or an autonomous 
 
 - Runtime: Hermes 0.21.2 at `~/.hermes/hermes-agent`, separate from the retired native wrapper UI.
 - Profile: `~/.hermes/profiles/founder`; launch with `founder chat`.
-- Model: `openai-codex` / `gpt-5.6-sol`, ChatGPT device OAuth. No API-key fallback.
+- Default model: `openai-codex` / `gpt-5.6-sol`, ChatGPT device OAuth. No automatic paid fallback.
 
 ### Codex model access
 
@@ -35,6 +35,13 @@ a listed model works. Other profiles and paid-provider fallbacks stay unchanged.
 - Source code: this `founder/` directory in the existing `cartha-hermes-agent-assistant` repository. The checkout happens to be named `cartha-founder-agent` locally.
 
 The `founder` launcher strips inherited API/cloud variables; provider selection is explicit.
+OpenRouter is authorized as a manually selected provider. Add its key in
+**Settings → Providers → API keys**, with **founder** selected, using the
+masked OpenRouter field (Enter saves). The key stays in Hermes' local
+credential storage, never this repository or chat. Refresh the composer
+model picker after connecting; connecting a key does not select a paid model
+or enable fallback. Missing/expired Codex login must not be disguised by
+manually inserting model names into its account-scoped catalog.
 This is a tool boundary, not an OS sandbox: the local runtime runs as the Mac user.
 No arbitrary shell, filesystem, browser, cloud, sending or database-query tools are exposed. The Operations process can retrieve exactly the existing report secret and query fixed aggregates; credentials never enter prompts or UI.
 Only skills, memory, session search and the 13 operations methods are enabled on CLI, cron and configured messaging surfaces.
