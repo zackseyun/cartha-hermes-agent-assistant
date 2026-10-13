@@ -1,5 +1,6 @@
 """Credential-minimal launcher: ChatGPT OAuth only, no inherited API/cloud keys."""
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -11,5 +12,10 @@ def clean_environment(source):
     return env
 
 if __name__=='__main__':
+    from codex_catalog import prepare_catalog
+    try:
+        prepare_catalog()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f'Codex catalog repair skipped: {error}', file=sys.stderr)
     exe=str(Path.home()/'.hermes/hermes-agent/venv/bin/hermes')
     os.execve(exe,[exe,*sys.argv[1:]],clean_environment(os.environ))

@@ -8,6 +8,28 @@ This is a local founder-operations pilot, not a production CRM or an autonomous 
 - Runtime: Hermes 0.21.2 at `~/.hermes/hermes-agent`, separate from the retired native wrapper UI.
 - Profile: `~/.hermes/profiles/founder`; launch with `founder chat`.
 - Model: `openai-codex` / `gpt-5.6-sol`, ChatGPT device OAuth. No API-key fallback.
+
+### Codex model access
+
+The founder launcher runs `codex_catalog.py` before starting Hermes. It uses
+the client version in Codex's local model cache (or `codex --version`) for
+Hermes' shared model/context catalog endpoint. The old `0.0.0` compatibility
+sentinel was verified to omit GPT-6 models; a current client version returns
+the account's visible catalog. This repair does not invent model IDs or read
+credentials, and refuses to edit an unrecognized upstream layout.
+
+Hermes and Codex must also use the **same ChatGPT account**. The founder
+profile previously borrowed another account's global credential pool. Give
+it its own login rather than copying Codex's rotating refresh token:
+
+```bash
+hermes -p founder auth add openai-codex --type oauth --label 'Codex account'
+```
+
+Approve the device sign-in with the account used by Codex, reopen Hermes,
+then choose **Refresh models** in the composer model picker. Account-scoped
+discovery determines availability; only a completed inference verifies that
+a listed model works. Other profiles and paid-provider fallbacks stay unchanged.
 - Skills: founder-brief, growth-analysis, sales-pipeline, church-research, follow-up-manager, experiment-tracker, codex-engineering.
 - Business records: private SQLite in the profile's `operations/`, not in Git or LLM memory alone.
 - Source code: this `founder/` directory in the existing `cartha-hermes-agent-assistant` repository. The checkout happens to be named `cartha-founder-agent` locally.
